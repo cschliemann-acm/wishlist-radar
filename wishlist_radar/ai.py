@@ -79,8 +79,10 @@ logos; don't guess a brand from style alone.
 - confidence (0-1): how sure you are about brand+model. Unbranded/guessed items under 0.5.
 - reason: where you saw it.
 
-If the user's note says which item they care about, return only that. Skip incidental \
-background objects. Return an empty list if nothing is identifiable.
+If the user's note says which item they care about, return only that. If there's no post and the \
+note is a list of products (one per line, or comma-separated), return every one of them as its \
+own item, in the same order, keeping any colourway, year or version they specified. Skip \
+incidental background objects. Return an empty list if nothing is identifiable.
 summary: one short sentence about the post."""
 
 
