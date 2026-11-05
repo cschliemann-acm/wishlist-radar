@@ -13,10 +13,30 @@
 </form>
 {% endif %}
 
+{% if suggestions %}
+<form class="card suggest" method="post" action="/shops/add-suggested">
+  <h2>Suggested shops</h2>
+  <p class="muted small">Ticked ones are added and checked automatically. Untick any you don't want.</p>
+  {% for group, label in [('yours', 'From your bookmarks'), ('more', 'Similar shops worth adding')] %}
+    {% set rows = suggestions|selectattr('group', 'equalto', group)|list %}
+    {% if rows %}
+    <h3>{{ label }}</h3>
+    <div class="suggest-grid">
+      {% for s in rows %}
+      <label class="check suggest-item"><input type="checkbox" name="pick" value="{{ s.url }}" checked>
+        <span><strong>{{ s.name }}</strong> <span class="muted small">{{ s.url }}</span></span></label>
+      {% endfor %}
+    </div>
+    {% endif %}
+  {% endfor %}
+  <div class="form-actions"><button class="btn btn-primary">Add selected</button></div>
+</form>
+{% endif %}
+
 <form class="card add-shops" method="post" action="/shops/add">
-  <h2>Add shops</h2>
+  <h2>Add other shops</h2>
   <p class="muted small">One per line: a web address, or <code>Name | address</code>. Each one is checked automatically to see what it supports.</p>
-  <textarea name="text" rows="5" required placeholder="No Man Walks Alone | nomanwalksalone.com&#10;Haven | havenshop.com&#10;Heddels | heddels.com"></textarea>
+  <textarea name="text" rows="5" required placeholder="Shop name | shopaddress.com&#10;anothershop.com"></textarea>
   <div class="form-actions"><button class="btn btn-primary">Add</button></div>
 </form>
 

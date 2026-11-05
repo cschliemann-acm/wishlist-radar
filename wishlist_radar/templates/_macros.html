@@ -24,6 +24,7 @@
   <div class="listing-body">
     <div class="listing-top">
       <span class="price">{{ l.price|money(l.currency) }}</span>
+      {% set conv = l.price|approx(l.currency, currency) %}{% if conv %}<span class="muted small">{{ conv }}</span>{% endif %}
       {% if deal %}<span class="badge badge-deal">Deal</span>{% endif %}
       {% if item.max_price and l.price and l.price > item.max_price and l.currency == currency %}
         <span class="badge badge-muted">over budget</span>

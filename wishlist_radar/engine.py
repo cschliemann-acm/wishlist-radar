@@ -11,13 +11,13 @@ from pathlib import Path
 
 import anthropic
 
-from . import ai, instagram, media, notify
+from . import ai, fx, instagram, media, notify
 from .config import Config
 from .db import DB
 from .sources import Source, SourceStatus
 from .sources.ebay import MARKETPLACES, EbaySource
 from .sources.grailed import GrailedSource
-from .sources.shops import ShopsSource, detect, normalize_url
+from .sources.shops import ShopsSource, detect, host_key, normalize_url
 
 log = logging.getLogger("wishlist_radar")
 
@@ -104,7 +104,7 @@ class Engine:
                 continue
             url = normalize_url(url)
             name = name.strip() or url.split("//", 1)[1].removeprefix("www.").split(".")[0].title()
-            if self.db.one("SELECT id FROM stores WHERE url = ?", url):
+            if any(host_key(s["url"]) == host_key(url) for s in self.db.stores()):
                 continue
             self.db.run("INSERT INTO stores (name, url, kind, status, created_at) VALUES (?,?,?,?,?)",
                         name, url, "pending", "Checking…", time.time())
@@ -241,8 +241,10 @@ class Engine:
                 l = batch[v.index]
                 is_match = v.verdict == "match" and v.score >= min_score
                 # Articles (no price) count: a post about the item is worth knowing about
+                price = (l["price"] if l["currency"] in (currency, "") else
+                         fx.convert(l["price"], l["currency"], currency))
                 in_budget = (item["max_price"] is None or l["price"] is None or
-                             (l["currency"] in (currency, "") and l["price"] <= item["max_price"]))
+                             (price is not None and price <= item["max_price"]))
                 is_deal = is_match and v.size_ok != "no" and in_budget
                 verdict = v.verdict if v.verdict != "match" or is_match else "maybe"
                 self.db.run("UPDATE listings SET verdict=?, score=?, size_ok=?, reason=?, is_deal=? "

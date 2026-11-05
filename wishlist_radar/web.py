@@ -22,11 +22,13 @@ from pydantic import BaseModel
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.middleware.sessions import SessionMiddleware
 
+from . import fx
 from .config import load_config
 from .db import DB, ITEM_FIELDS
 from .engine import INTERVAL_CHOICES, Engine
 from .instagram import DownloadError
 from .sources.ebay import MARKETPLACES
+from .sources.shops import SUGGESTED_SHOPS, host_key
 
 logging.basicConfig(level=logging.INFO)
 HERE = Path(__file__).parent
@@ -98,7 +100,15 @@ def ago(ts: float | None) -> str:
     return "in under a min" if future else "just now"
 
 
-templates.env.filters.update(money=money, interval=interval_label, ago=ago)
+def approx(value, frm: str, to: str) -> str:
+    """'≈ $123' for prices in another currency (cached rates only, never blocks a page)."""
+    if value is None or not frm or not to or frm == to:
+        return ""
+    converted = fx.convert(value, frm, to, fetch=False)
+    return f"≈ {money(round(converted), to)}" if converted is not None else ""
+
+
+templates.env.filters.update(money=money, interval=interval_label, ago=ago, approx=approx)
 templates.env.globals.update(INTERVAL_CHOICES=INTERVAL_CHOICES, MARKETPLACES=MARKETPLACES)
 
 
@@ -419,7 +429,10 @@ def shops_page(request: Request):
     settings = engine.db.settings()
     counts = {k: sum(1 for s in stores if s["kind"] == k) for k in ("shopify", "feed", "unsupported", "pending")}
     tracked = engine.db.items(("active", "paused", "draft"))
-    return render(request, "shops.html", stores=stores, counts=counts,
+    have = {host_key(s["url"]) for s in stores}
+    suggestions = [{"name": n, "url": u, "group": g} for n, u, g in SUGGESTED_SHOPS
+                   if host_key(u) not in have]
+    return render(request, "shops.html", stores=stores, counts=counts, suggestions=suggestions,
                   default_on="stores" in settings["default_sources"].split(","),
                   missing=sum(1 for i in tracked if "stores" not in i["sources"].split(",")))
 
@@ -429,6 +442,16 @@ def shops_add(request: Request, text: str = Form("")):
     n = get_engine().add_stores(text)
     flash(request, f"Added {n} shop{'s' if n != 1 else ''}. Checking what each one supports…" if n
           else "Nothing new to add (already added, or not a web address)", "ok" if n else "error")
+    return back("/shops")
+
+
+@app.post("/shops/add-suggested")
+async def shops_add_suggested(request: Request):
+    form = await request.form()
+    picked = set(form.getlist("pick"))
+    lines = [f"{n} | {u}" for n, u, _ in SUGGESTED_SHOPS if u in picked]
+    n = get_engine().add_stores("\n".join(lines))
+    flash(request, f"Added {n} shop{'s' if n != 1 else ''}. Checking what each one supports…")
     return back("/shops")
 
 

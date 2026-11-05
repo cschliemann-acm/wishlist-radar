@@ -3,7 +3,7 @@
 - Shopify stores (most independent menswear shops): searched with the store's own public
   product search (/search/suggest.json), then each new product's page data
   (/products/<handle>.js) tells us which sizes are in stock and whether it's on sale.
-- News / deal sites (Uncrate, Gear Patrol, Heddels…): their RSS feed is read, and posts
+- News / deal sites (Heddels and similar): their RSS feed is read, and posts
   that mention the item are passed on to be judged.
 - Anything else is marked unsupported.
 
@@ -31,6 +31,38 @@ HEADERS = {
     "Accept": "application/json, text/html, application/rss+xml, application/xml;q=0.9, */*;q=0.8",
 }
 RESULTS_PER_SHOP = 8
+
+# Offered on the Shops page for one-click adding. (name, address, group)
+SUGGESTED_SHOPS = [
+    # From your bookmarks
+    ("No Man Walks Alone", "nomanwalksalone.com", "yours"),
+    ("Yuketen", "yuketen.com", "yours"),
+    ("Story mfg.", "storymfg.com", "yours"),
+    ("18 East", "18east.co", "yours"),
+    ("mfpen", "mfpen.com", "yours"),
+    ("Thunders Love", "thunderslove.com", "yours"),
+    ("Notre", "notre-shop.com", "yours"),
+    ("Union Los Angeles", "store.unionlosangeles.com", "yours"),
+    ("Haven", "havenshop.com", "yours"),
+    ("Neighbour", "neighbourshop.com", "yours"),
+    ("Lost & Found", "shoplostfound.com", "yours"),
+    ("Corlection", "corlection.com", "yours"),
+    ("Cueva", "cuevashop.com", "yours"),
+    ("Canoe Club", "shopcanoeclub.com", "yours"),
+    ("MoMA Design Store", "store.moma.org", "yours"),
+    ("Très Bien", "tresbienshop.com", "yours"),
+    ("BSTN", "bstn.com", "yours"),
+    ("SSENSE", "ssense.com", "yours"),
+    ("Huckberry", "huckberry.com", "yours"),
+    ("Heddels", "heddels.com", "yours"),
+    # Similar shops worth adding
+    ("C'H'C'M'", "chcmshop.com", "more"),
+    ("Stag Provisions", "stagprovisions.com", "more"),
+    ("Clutch Cafe", "clutch-cafe.com", "more"),
+    ("Goodhood", "goodhoodstore.com", "more"),
+    ("Oi Polloi", "oipolloi.com", "more"),
+    ("Nubian", "nubiantokyo.com", "more"),
+]
 FEED_MAX_AGE_DAYS = 14
 _STOPWORDS = {"the", "and", "with", "for", "in", "of", "a", "an", "og", "new", "men", "mens"}
 
@@ -41,6 +73,11 @@ def normalize_url(url: str) -> str:
         url = "https://" + url
     p = urlparse(url)
     return f"{p.scheme}://{p.netloc.lower()}"
+
+
+def host_key(url: str) -> str:
+    """Same shop whether or not the address has www."""
+    return urlparse(normalize_url(url)).netloc.removeprefix("www.")
 
 
 def _client() -> httpx.Client:

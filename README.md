@@ -67,11 +67,15 @@ The **Shops** page holds your favourite stores and sites (one address per line, 
 - **Shopify stores** (most independent menswear shops) are searched with the store's own
   product search. New products are opened once to see which sizes are **in stock** and whether
   they're **on sale**.
-- **News and deal sites** (Heddels, Gear Patrol, Uncrate…) have their RSS feed read. Posts
+- **News and deal sites** (e.g. Heddels) have their RSS feed read. Posts
   mentioning a wishlist item are passed to the matcher, and a post specifically about it counts
   as a deal.
 - **Everything else** (big retailers with custom sites that block automated access, such as
   SSENSE, Huckberry or BSTN) is marked *not supported*.
+
+The page also offers a ready-made list of shops (yours plus similar ones) to add in one click.
+Prices in other currencies are converted with daily exchange rates when comparing with your
+budget, so a £150 listing counts against a $200 budget.
 
 Tick **Shops** on an item to search them all, or use "Yes, use them everywhere" on the Shops page.
 

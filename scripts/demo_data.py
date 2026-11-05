@@ -112,7 +112,7 @@ for name, url, kind, status in [
     ("Haven", "https://havenshop.com", "shopify", "Shopify store · prices in USD"),
     ("Story mfg.", "https://storymfg.com", "shopify", "Shopify store · prices in USD"),
     ("Heddels", "https://www.heddels.com", "feed", "News/deals site · reading its RSS feed"),
-    ("Gear Patrol", "https://www.gearpatrol.com", "feed", "News/deals site · reading its RSS feed"),
+    ("Clutch Cafe", "https://clutch-cafe.com", "shopify", "Shopify store · prices in GBP"),
     ("SSENSE", "https://www.ssense.com", "unsupported", "The site blocks automated access (403)"),
     ("Union Los Angeles", "https://unionlosangeles.com", "pending", "Checking…"),
 ]:

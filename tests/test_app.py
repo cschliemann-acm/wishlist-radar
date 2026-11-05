@@ -341,8 +341,40 @@ def test_add_stores_parses_lines(tmp_path, monkeypatch):
     eng = make_engine(tmp_path, {})
     monkeypatch.setattr(eng, "detect_stores_async", lambda only_pending=False: None)
     n = eng.add_stores("No Man Walks Alone | nomanwalksalone.com\nhttps://www.havenshop.com/collections/new\n"
-                       "\nnot a url\nnomanwalksalone.com")
+                       "\nnot a url\nnomanwalksalone.com\nhttps://www.nomanwalksalone.com")
     assert n == 2
     stores = {s["name"]: s["url"] for s in eng.db.stores()}
     assert stores == {"No Man Walks Alone": "https://nomanwalksalone.com",
                       "Havenshop": "https://www.havenshop.com"}
+
+
+def test_foreign_currency_listing_counts_against_budget(tmp_path, monkeypatch):
+    from wishlist_radar import fx
+
+    fx.set_rates("USD", {"USD": 1.0, "GBP": 0.8, "JPY": 150.0})
+    shop = FakeSource("stores", [
+        Listing(listing_id="a", title="Box Shirt", price=150, currency="GBP", url="u1"),   # $187.50
+        Listing(listing_id="b", title="Box Shirt", price=180, currency="GBP", url="u2"),   # $225
+        Listing(listing_id="c", title="Box Shirt", price=99, currency="XYZ", url="u3"),    # unknown
+    ])
+    eng = make_engine(tmp_path, {"stores": shop})
+    monkeypatch.setattr(ai, "judge", lambda c, m, item, size, ls, **kw: [
+        ai.Verdict(index=i, verdict="match", score=0.9, size_ok="yes", reason="") for i in range(len(ls))])
+    item_id = eng.db.create_item(status="active", name="Box Shirt", search_query="box shirt",
+                                 max_price=200, sources="stores")
+    eng.check_item(item_id)
+    deals = {l["listing_id"]: l["is_deal"] for l in eng.db.all("SELECT * FROM listings")}
+    assert deals == {"a": 1, "b": 0, "c": 0}
+    assert round(fx.convert(150, "GBP", "USD")) == 188
+
+
+def test_add_suggested_shops(client, monkeypatch):
+    c, eng = client
+    c.post("/login", data={"password": "pw"})
+    monkeypatch.setattr(eng, "detect_stores_async", lambda only_pending=False: None)
+    page = c.get("/shops").text
+    assert "Suggested shops" in page and "shopcanoeclub.com" in page
+    c.post("/shops/add-suggested", data={"pick": ["shopcanoeclub.com", "store.unionlosangeles.com"]})
+    urls = {s["url"] for s in eng.db.stores()}
+    assert urls == {"https://shopcanoeclub.com", "https://store.unionlosangeles.com"}
+    assert "shopcanoeclub.com" not in c.get("/shops").text.split("Suggested shops")[-1].split("Your shops")[0]
