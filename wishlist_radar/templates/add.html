@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% block title %}Add{% endblock %}
+{% block content %}
+<a href="/" class="crumb">← Wishlist</a>
+<h1>Add to wishlist</h1>
+<p class="muted">Whatever you add lands in your inbox first, so you can check it before tracking starts.</p>
+
+<div class="add-grid">
+  <form class="card add-card" method="post" action="/add" data-busy>
+    <h2>From an Instagram post</h2>
+    <p class="muted small">Reels and video posts. Claude looks through the video for the products shown.</p>
+    <label>Link <input name="url" type="url" placeholder="https://www.instagram.com/reel/…" required></label>
+    <label>Which item? <span class="muted">(optional)</span>
+      <input name="note" placeholder="e.g. the jacket, not the trousers"></label>
+    <button class="btn btn-primary">Find items</button>
+  </form>
+
+  <form class="card add-card" method="post" action="/add" enctype="multipart/form-data" data-busy>
+    <h2>From screenshots</h2>
+    <p class="muted small">Photo posts, carousels, a shop page, anything.</p>
+    <label class="file-drop">
+      <input type="file" name="files" accept="image/*" multiple required>
+      <span>Choose images</span>
+    </label>
+    <label>Which item? <span class="muted">(optional)</span>
+      <input name="note" placeholder="e.g. the brown loafers"></label>
+    <button class="btn btn-primary">Find items</button>
+  </form>
+
+  <form class="card add-card" method="post" action="/add" data-busy>
+    <h2>Describe it</h2>
+    <p class="muted small">If you already know what you want.</p>
+    <label>What are you looking for?
+      <textarea name="text" rows="4" placeholder="e.g. Our Legacy box shirt in black silk, or vintage 90s Arc'teryx Theta AR in purple" required></textarea></label>
+    <button class="btn btn-primary">Add</button>
+  </form>
+</div>
+<p class="muted small center">Finding items takes 10–60 seconds.</p>
+{% endblock %}

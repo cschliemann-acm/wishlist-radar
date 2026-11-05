@@ -1,0 +1,112 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m with context %}
+{% block title %}Wishlist{% endblock %}
+{% block content %}
+
+{% if drafts %}
+<section class="inbox">
+  <div class="section-head">
+    <h2>Inbox <span class="count">{{ drafts|length }}</span></h2>
+    <p class="muted">Found in your posts. Check the details, set a size and budget, then start tracking.</p>
+  </div>
+  {% for d in drafts %}
+  <form class="card draft" method="post" action="/items/{{ d.id }}">
+    <input type="hidden" name="status" value="active">
+    <input type="hidden" name="next" value="/">
+    <input type="hidden" name="sources_present" value="1">
+    {{ m.item_image(d, "draft-img") }}
+    <div class="draft-main">
+      <div class="draft-title">
+        <input class="input-title" name="name" value="{{ d.name }}" aria-label="Name">
+        <input class="input-brand" name="brand" value="{{ d.brand }}" placeholder="Brand" aria-label="Brand">
+      </div>
+      <p class="muted small">
+        {% if d.confidence is not none %}
+          <span class="badge {{ 'badge-muted' if d.confidence >= 0.6 else 'badge-warn' }}">{{ (d.confidence * 100)|round|int }}% sure</span>
+        {% endif %}
+        {{ d.reason }}{% if d.source_url %} · <a href="{{ d.source_url }}" target="_blank" rel="noopener">post</a>{% endif %}
+      </p>
+      <div class="draft-fields">
+        <label class="grow">Search for
+          <input name="search_query" value="{{ d.search_query }}">
+        </label>
+        <label>Size
+          <input name="size" value="{{ d.size }}" placeholder="{{ d.default_size or 'any' }}" class="w-sm">
+        </label>
+        <label>Max price
+          <input name="max_price" value="{{ d.max_price if d.max_price is not none else '' }}" inputmode="decimal" placeholder="{{ currency }}" class="w-sm">
+        </label>
+        <label>Check
+          <select name="interval_minutes">
+            {% for mins in INTERVAL_CHOICES %}<option value="{{ mins }}" {{ 'selected' if mins == d.interval_minutes }}>{{ mins|interval }}</option>{% endfor %}
+          </select>
+        </label>
+        <fieldset class="checks-inline">
+          <legend>On</legend>
+          {% for key, label in source_labels.items() %}
+            <label class="check"><input type="checkbox" name="source" value="{{ key }}" {{ 'checked' if key in d.sources.split(',') }}> {{ label }}</label>
+          {% endfor %}
+        </fieldset>
+      </div>
+    </div>
+    <div class="draft-actions">
+      <button class="btn btn-primary">Start tracking</button>
+      <button class="btn btn-ghost" formaction="/items/{{ d.id }}/delete" formnovalidate>Discard</button>
+    </div>
+  </form>
+  {% endfor %}
+</section>
+{% endif %}
+
+<section>
+  <div class="section-head row">
+    <div>
+      <h1>Wishlist</h1>
+      <p class="muted">
+        {% set active = items|selectattr('status', 'equalto', 'active')|list %}
+        {{ active|length }} tracking{% if items|length > active|length %} · {{ items|length - active|length }} paused{% endif %}
+        {% if deal_total %} · <strong class="deal-text">{{ deal_total }} deal{{ 's' if deal_total != 1 }}</strong>{% endif %}
+        {% if next_check %} · next search {{ m.when(next_check) }}{% endif %}
+      </p>
+    </div>
+    {% if archived_count %}<a href="/archived" class="muted small">Archived ({{ archived_count }})</a>{% endif %}
+  </div>
+
+  {% if items %}
+  <div class="grid">
+    {% for i in items %}
+    <a class="card item-card {{ 'is-paused' if i.status == 'paused' }} {{ 'has-deal' if i.deal_count }}" href="/items/{{ i.id }}">
+      <div class="item-card-img">
+        {{ m.item_image(i, "cover") }}
+        {% if i.deal_count %}<span class="badge badge-deal floating">{{ i.deal_count }} deal{{ 's' if i.deal_count != 1 }}</span>{% endif %}
+        {% if i.status == 'paused' %}<span class="badge badge-muted floating">Paused</span>{% endif %}
+      </div>
+      <div class="item-card-body">
+        {% if i.brand %}<div class="eyebrow">{{ i.brand }}</div>{% endif %}
+        <div class="item-name">{{ i.name }}</div>
+        <div class="chips">
+          {% for s in i.sources.split(',') if s %}{{ m.source_chip(s, source_labels.get(s, s)) }}{% endfor %}
+          {% if i.max_price %}<span class="chip">≤ {{ i.max_price|money(currency) }}</span>{% endif %}
+        </div>
+        <div class="item-stats">
+          <div><span class="stat-num">{{ i.match_count }}</span><span class="stat-label">matches</span></div>
+          <div><span class="stat-num">{{ i.best_price|money(i.best_currency) if i.best_price is not none else '—' }}</span><span class="stat-label">lowest</span></div>
+        </div>
+        <div class="item-foot muted">
+          {% if i.checking %}<span class="pulse"></span> Searching…
+          {% elif i.status == 'paused' %}Paused
+          {% else %}{{ i.interval_minutes|interval|capitalize }} · {% if i.last_checked_at %}checked {{ m.when(i.last_checked_at) }}{% else %}first search soon{% endif %}{% endif %}
+        </div>
+      </div>
+    </a>
+    {% endfor %}
+  </div>
+  {% elif not drafts %}
+  <div class="card empty">
+    <h2>Nothing on your wishlist yet</h2>
+    <p class="muted">Share an Instagram post from your phone, upload a screenshot, or just describe what you're after.</p>
+    <a class="btn btn-primary" href="/add">Add your first item</a>
+  </div>
+  {% endif %}
+</section>
+{% endblock %}

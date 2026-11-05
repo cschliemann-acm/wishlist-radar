@@ -1,0 +1,79 @@
+{% extends "base.html" %}
+{% block title %}Settings{% endblock %}
+{% block content %}
+<h1>Settings</h1>
+
+<form method="post" action="/settings" class="settings">
+  <section class="card">
+    <h2>Your sizes</h2>
+    <p class="muted small">Used for every item in that category unless the item has its own size. Write them how listings do, e.g. “M”, “48”, “32”, “US 10”.</p>
+    <div class="form-grid three">
+      <label>Tops &amp; outerwear <input name="size_tops" value="{{ settings.size_tops }}" placeholder="e.g. M / 48"></label>
+      <label>Bottoms <input name="size_bottoms" value="{{ settings.size_bottoms }}" placeholder="e.g. 32"></label>
+      <label>Shoes <input name="size_shoes" value="{{ settings.size_shoes }}" placeholder="e.g. US 10"></label>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>Searching</h2>
+    <div class="form-grid">
+      <label>eBay site
+        <select name="ebay_marketplace">
+          {% for code, (country, cur) in MARKETPLACES.items() %}
+            <option value="{{ code }}" {{ 'selected' if code == settings.ebay_marketplace }}>{{ country }} ({{ cur }})</option>
+          {% endfor %}
+        </select>
+        <span class="hint">Also sets the currency for budgets.</span>
+      </label>
+      <label>New items are checked
+        <select name="default_interval_minutes">
+          {% for mins in INTERVAL_CHOICES %}<option value="{{ mins }}" {{ 'selected' if mins == settings.default_interval_minutes|int }}>{{ mins|interval }}</option>{% endfor %}
+        </select>
+      </label>
+      <fieldset><legend>New items search</legend>
+        {% for key, src in sources.items() %}
+          <label class="check"><input type="checkbox" name="default_source" value="{{ key }}" {{ 'checked' if key in settings.default_sources.split(',') }}> {{ src.label }}{% if src.experimental %} <span class="badge badge-warn">experimental</span>{% endif %}</label>
+        {% endfor %}
+      </fieldset>
+      <label>Match strictness
+        <input name="min_match_score" type="number" min="0.3" max="1" step="0.05" value="{{ settings.min_match_score }}">
+        <span class="hint">0.3–1. Higher = fewer, surer matches. 0.7 is a good start.</span>
+      </label>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>Notifications</h2>
+    <p class="muted small">Deals are pushed to your phone through <a href="https://ntfy.sh" target="_blank" rel="noopener">ntfy</a>, a free app with no account needed. Install it, subscribe to a topic name only you know, and enter the same name here.</p>
+    <div class="form-grid">
+      <label>ntfy topic <input name="ntfy_topic" value="{{ settings.ntfy_topic }}" placeholder="e.g. caspar-deals-8f3k2" autocomplete="off"></label>
+      <div class="align-end"><button class="btn" formaction="/settings/test-notification">Send a test</button></div>
+    </div>
+  </section>
+
+  <div class="form-actions"><button class="btn btn-primary">Save settings</button></div>
+</form>
+
+<section class="card">
+  <h2>Marketplaces</h2>
+  {% for key, src in sources.items() %}
+    {% set st = statuses[key] %}
+    <div class="source-row">
+      <span class="chip src src-{{ key }}">{{ src.label }}</span>
+      <span class="dot {{ 'dot-ok' if st.ok else 'dot-bad' }}"></span>
+      <span class="small">{{ st.message }}</span>
+      {% if src.experimental %}<span class="badge badge-warn">experimental</span>{% endif %}
+    </div>
+  {% endfor %}
+  <p class="muted small">Grailed has no official API. Its connector uses the same search Grailed's website does, so it can stop working when they change their site, and automated access may be against their terms. Keep its checks infrequent.</p>
+</section>
+
+<section class="card">
+  <h2>iPhone Shortcut</h2>
+  <p class="muted small">Same setup as reel-tunes: a Shortcut in the share sheet that POSTs <code>{"url": Shortcut Input}</code> as JSON with header <code>Authorization: Bearer &lt;INGEST_TOKEN&gt;</code> to:</p>
+  <p><code class="copy">{{ ingest_url }}</code></p>
+  <p class="muted small">Show <code>message</code> from the response in a notification.</p>
+</section>
+
+<form method="post" action="/logout" class="center"><button class="btn btn-ghost">Sign out</button></form>
+{% endblock %}

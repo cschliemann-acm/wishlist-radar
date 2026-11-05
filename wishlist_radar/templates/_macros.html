@@ -1,0 +1,84 @@
+{% macro when(ts) -%}
+  {%- if ts -%}<time data-ts="{{ ts }}">{{ ts|ago }}</time>{%- else -%}never{%- endif -%}
+{%- endmacro %}
+
+{% macro item_image(item, cls="thumb") -%}
+  {%- if item.image_path -%}
+    <img class="{{ cls }}" src="/images/{{ item.image_path }}" alt="" loading="lazy">
+  {%- elif item.fallback_image -%}
+    <img class="{{ cls }}" src="{{ item.fallback_image }}" alt="" loading="lazy" referrerpolicy="no-referrer">
+  {%- else -%}
+    <div class="{{ cls }} placeholder" aria-hidden="true">{{ (item.brand or item.name)[:2]|upper }}</div>
+  {%- endif -%}
+{%- endmacro %}
+
+{% macro source_chip(key, label) -%}
+  <span class="chip src src-{{ key }}">{{ label }}</span>
+{%- endmacro %}
+
+{% macro listing_card(l, item, deal=false) -%}
+<article class="listing {{ 'is-deal' if deal }}">
+  <a class="listing-img" href="{{ l.url }}" target="_blank" rel="noopener">
+    {% if l.image_url %}<img src="{{ l.image_url }}" alt="" loading="lazy" referrerpolicy="no-referrer">{% endif %}
+  </a>
+  <div class="listing-body">
+    <div class="listing-top">
+      <span class="price">{{ l.price|money(l.currency) }}</span>
+      {% if deal %}<span class="badge badge-deal">Deal</span>{% endif %}
+      {% if item.max_price and l.price and l.price > item.max_price and l.currency == currency %}
+        <span class="badge badge-muted">over budget</span>
+      {% endif %}
+      <span class="chip src src-{{ l.source }}">{{ source_labels.get(l.source, l.source) }}</span>
+    </div>
+    <a class="listing-title" href="{{ l.url }}" target="_blank" rel="noopener">{{ l.title }}</a>
+    <div class="meta">
+      {% if l.size_text %}<span>Size {{ l.size_text }}</span>{% endif %}
+      {% if l.size_ok == 'yes' %}<span class="ok">✓ your size</span>{% elif l.size_ok == 'no' %}<span class="warn">✗ wrong size</span>{% endif %}
+      {% if l.condition %}<span>{{ l.condition }}</span>{% endif %}
+      <span>found {{ when(l.first_seen_at) }}</span>
+    </div>
+    {% if l.reason %}<p class="reason">{{ l.reason }}{% if l.score is not none %} · {{ (l.score * 100)|round|int }}% sure{% endif %}</p>{% endif %}
+  </div>
+  <div class="listing-actions">
+    <a class="btn btn-sm" href="{{ l.url }}" target="_blank" rel="noopener">Open</a>
+    {% if l.verdict != 'match' %}
+      <form method="post" action="/listings/{{ l.id }}/promote"><button class="btn btn-sm btn-ghost" title="This is the item">It's a match</button></form>
+    {% endif %}
+    <form method="post" action="/listings/{{ l.id }}/dismiss"><button class="btn btn-sm btn-ghost" title="Hide this listing">Hide</button></form>
+  </div>
+</article>
+{%- endmacro %}
+
+{% macro check_row(c, show_item=false) -%}
+<tr class="{{ 'row-error' if c.error }}">
+  <td>{{ when(c.started_at) }}</td>
+  {% if show_item %}<td><a href="/items/{{ c.item_id }}">{{ c.item_name }}</a></td>{% endif %}
+  <td>{{ source_labels.get(c.source, c.source) }}</td>
+  <td class="num">{{ c.results }}</td>
+  <td class="num">{{ c.new_listings }}</td>
+  <td class="num">{{ c.matches }}</td>
+  <td class="num {{ 'deal-num' if c.deals }}">{{ c.deals }}</td>
+  <td class="muted">{{ c.trigger }}{% if c.duration_ms %} · {{ '%.1f'|format(c.duration_ms / 1000) }}s{% endif %}</td>
+  <td class="err">{{ c.error }}</td>
+</tr>
+{%- endmacro %}
+
+{% macro checks_table(checks, show_item=false) -%}
+<div class="table-wrap">
+<table class="checks">
+  <thead><tr>
+    <th>When</th>{% if show_item %}<th>Item</th>{% endif %}<th>Where</th>
+    <th class="num" title="Listings returned by the search">Results</th>
+    <th class="num" title="Listings not seen before">New</th>
+    <th class="num" title="New listings Claude judged to be the item">Matches</th>
+    <th class="num" title="Matches in your size and budget">Deals</th>
+    <th>How</th><th></th>
+  </tr></thead>
+  <tbody>
+    {% for c in checks %}{{ check_row(c, show_item) }}{% else %}
+      <tr><td colspan="9" class="empty-row">No searches yet</td></tr>
+    {% endfor %}
+  </tbody>
+</table>
+</div>
+{%- endmacro %}

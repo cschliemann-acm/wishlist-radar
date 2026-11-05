@@ -1,0 +1,9 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m with context %}
+{% block title %}Rejected · {{ item.name }}{% endblock %}
+{% block content %}
+<a href="/items/{{ item.id }}" class="crumb">← {{ item.name }}</a>
+<h1>Rejected listings</h1>
+<p class="muted">Listings the search turned up that Claude decided aren't the item. If it got one wrong, mark it as a match. If lots of these are junk, a more specific search query helps.</p>
+{% for l in listings %}{{ m.listing_card(l, item) }}{% else %}<p class="empty-line">None.</p>{% endfor %}
+{% endblock %}

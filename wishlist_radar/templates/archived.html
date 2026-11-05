@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m with context %}
+{% block title %}Archived{% endblock %}
+{% block content %}
+<a href="/" class="crumb">← Wishlist</a>
+<h1>Archived</h1>
+<p class="muted">Not searched any more. Resume one to start tracking it again.</p>
+{% for i in items %}
+  <div class="card row-card">
+    {{ m.item_image(i, "thumb") }}
+    <a href="/items/{{ i.id }}" class="grow"><div class="eyebrow">{{ i.brand }}</div><div class="item-name">{{ i.name }}</div></a>
+    <form method="post" action="/items/{{ i.id }}/status"><input type="hidden" name="status" value="active"><input type="hidden" name="next" value="/archived"><button class="btn btn-sm">Resume</button></form>
+    <form method="post" action="/items/{{ i.id }}/delete"><input type="hidden" name="next" value="/archived"><button class="btn btn-sm btn-ghost danger">Delete</button></form>
+  </div>
+{% else %}
+  <p class="empty-line">Nothing archived.</p>
+{% endfor %}
+{% endblock %}

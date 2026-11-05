@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m with context %}
+{% block title %}Activity{% endblock %}
+{% block content %}
+<h1>Activity</h1>
+
+<div class="stat-row card">
+  <div><span class="stat-num">{{ totals.checks or 0 }}</span><span class="stat-label">searches today</span></div>
+  <div><span class="stat-num">{{ totals.results or 0 }}</span><span class="stat-label">listings scanned</span></div>
+  <div><span class="stat-num">{{ totals.new or 0 }}</span><span class="stat-label">new listings</span></div>
+  <div><span class="stat-num {{ 'warn' if totals.errors }}">{{ totals.errors or 0 }}</span><span class="stat-label">failed searches</span></div>
+</div>
+
+<section>
+  <div class="section-head"><h2>Recent deals</h2></div>
+  {% for l in deals %}
+    <p class="small muted deal-for">For <a href="/items/{{ l.item_id }}">{{ (l.item_brand ~ ' ' ~ l.item_name)|trim }}</a></p>
+    {{ m.listing_card(l, {'max_price': none}, deal=true) }}
+  {% else %}
+    <p class="empty-line">No deals yet.</p>
+  {% endfor %}
+</section>
+
+<section>
+  <div class="section-head"><h2>Searches</h2><p class="muted small">Every search the radar has run, newest first.</p></div>
+  {{ m.checks_table(checks, show_item=true) }}
+</section>
+
+<section>
+  <div class="section-head"><h2>Imports</h2></div>
+  <div class="table-wrap">
+  <table class="checks">
+    <thead><tr><th>When</th><th>From</th><th>What Claude saw</th><th class="num">Items</th><th></th></tr></thead>
+    <tbody>
+    {% for p in posts %}
+      <tr class="{{ 'row-error' if p.error }}">
+        <td>{{ m.when(p.created_at) }}</td>
+        <td>{% if p.url %}<a href="{{ p.url }}" target="_blank" rel="noopener">{{ p.kind }} ↗</a>{% else %}{{ p.kind }}{% endif %}</td>
+        <td>{{ p.summary }}</td>
+        <td class="num">{{ p.item_count }}</td>
+        <td class="err">{{ p.error }}</td>
+      </tr>
+    {% else %}
+      <tr><td colspan="5" class="empty-row">Nothing imported yet</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+</section>
+{% endblock %}

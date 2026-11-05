@@ -1,0 +1,147 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m with context %}
+{% block title %}{{ item.name }}{% endblock %}
+{% block content %}
+<a href="/" class="crumb">← Wishlist</a>
+
+<section class="item-head" data-item-id="{{ item.id }}" data-checking="{{ 1 if item.checking else 0 }}">
+  {{ m.item_image(item, "hero") }}
+  <div class="item-head-main">
+    {% if item.brand %}<div class="eyebrow">{{ item.brand }}</div>{% endif %}
+    <h1>{{ item.name }}</h1>
+    <p class="muted">{{ item.description }}</p>
+    <div class="chips">
+      <span class="chip status-{{ item.status }}">{{ {'active': 'Tracking', 'paused': 'Paused', 'draft': 'In inbox', 'archived': 'Archived'}[item.status] }}</span>
+      {% if item.color %}<span class="chip">{{ item.color }}</span>{% endif %}
+      <span class="chip">{{ item.category|capitalize }}</span>
+      {% if item.source_url %}<a class="chip chip-link" href="{{ item.source_url }}" target="_blank" rel="noopener">From post ↗</a>{% endif %}
+    </div>
+    <div class="actions">
+      <form method="post" action="/items/{{ item.id }}/check">
+        <button class="btn btn-primary" {{ 'disabled' if item.checking }}>{% if item.checking %}<span class="pulse"></span> Searching…{% else %}Search now{% endif %}</button>
+      </form>
+      {% if item.status == 'active' %}
+        <form method="post" action="/items/{{ item.id }}/status"><input type="hidden" name="status" value="paused"><button class="btn">Pause</button></form>
+      {% elif item.status in ('paused', 'archived') %}
+        <form method="post" action="/items/{{ item.id }}/status"><input type="hidden" name="status" value="active"><button class="btn">Resume</button></form>
+      {% endif %}
+      {% if item.status != 'archived' %}
+        <form method="post" action="/items/{{ item.id }}/status"><input type="hidden" name="status" value="archived"><input type="hidden" name="next" value="/"><button class="btn btn-ghost">Archive</button></form>
+      {% endif %}
+    </div>
+  </div>
+</section>
+
+<section class="plan card">
+  <h2>Search plan</h2>
+  <dl class="plan-grid">
+    <div><dt>Searching for</dt><dd class="query">“{{ item.search_query }}”</dd></div>
+    <div><dt>Size</dt><dd>{{ wanted_size or 'Any' }}{% if not item.size and wanted_size %} <span class="muted small">(your default)</span>{% endif %}</dd></div>
+    <div><dt>Budget</dt><dd>{{ ('up to ' ~ item.max_price|money(currency)) if item.max_price else 'No limit · tracking prices' }}</dd></div>
+    <div><dt>How often</dt><dd>{{ item.interval_minutes|interval|capitalize }}</dd></div>
+    <div><dt>Last search</dt><dd>{{ m.when(item.last_checked_at) }}</dd></div>
+    <div><dt>Next search</dt><dd>
+      {% if item.status != 'active' %}<span class="muted">— (not tracking)</span>
+      {% elif item.checking %}<span class="pulse"></span> running now
+      {% elif item.next_check_at %}{{ m.when(item.next_check_at) }}{% else %}within a minute{% endif %}
+    </dd></div>
+  </dl>
+
+  <h3>Where</h3>
+  <div class="sources">
+    {% for key in item.sources.split(',') if key %}
+      {% set st = statuses.get(key) %}
+      {% set last = last_by_source.get(key) %}
+      <div class="source-row">
+        {{ m.source_chip(key, source_labels.get(key, key)) }}
+        <span class="dot {{ 'dot-ok' if st and st.ok and not (last and last.error) else 'dot-bad' }}"></span>
+        <span class="small">
+          {% if st and not st.ok %}<span class="warn">{{ st.message }}</span>
+          {% elif last %}
+            {% if last.error %}<span class="warn">Last search failed: {{ last.error[:160] }}</span>
+            {% else %}Last search {{ m.when(last.started_at) }}: {{ last.results }} results, {{ last.new_listings }} new{% endif %}
+          {% elif st %}{{ st.message }}{% endif %}
+        </span>
+      </div>
+    {% else %}
+      <p class="warn small">No marketplaces selected. Pick some under “Edit” below.</p>
+    {% endfor %}
+  </div>
+
+  <div class="stat-row">
+    <div><span class="stat-num">{{ stats.seen or 0 }}</span><span class="stat-label">listings seen</span></div>
+    <div><span class="stat-num">{{ stats.matched or 0 }}</span><span class="stat-label">matches</span></div>
+    <div><span class="stat-num">{{ stats.low|money(currency) if stats.low is not none else '—' }}</span><span class="stat-label">lowest match</span></div>
+    <div><span class="stat-num">{{ stats.avg|money(currency) if stats.avg is not none else '—' }}</span><span class="stat-label">average match</span></div>
+  </div>
+</section>
+
+<section>
+  <div class="section-head"><h2>Deals <span class="count">{{ deals|length }}</span></h2>
+    <p class="muted small">The item, in your size{% if item.max_price %} and under {{ item.max_price|money(currency) }}{% endif %}. You get a notification for each new one.</p></div>
+  {% for l in deals %}{{ m.listing_card(l, item, deal=true) }}{% else %}
+    <p class="empty-line">No deals yet{% if item.status == 'active' %}. It'll keep looking {{ item.interval_minutes|interval }}{% endif %}.</p>
+  {% endfor %}
+</section>
+
+{% if matches %}
+<section>
+  <div class="section-head"><h2>Other matches <span class="count">{{ matches|length }}</span></h2>
+    <p class="muted small">The right item, but over budget or possibly the wrong size.</p></div>
+  {% for l in matches %}{{ m.listing_card(l, item) }}{% endfor %}
+</section>
+{% endif %}
+
+{% if maybes %}
+<section>
+  <details>
+    <summary><h2 class="inline">Possible matches <span class="count">{{ maybes|length }}</span></h2> <span class="muted small">Claude wasn't sure</span></summary>
+    {% for l in maybes %}{{ m.listing_card(l, item) }}{% endfor %}
+  </details>
+</section>
+{% endif %}
+
+<section>
+  <div class="section-head row">
+    <h2>Search history</h2>
+    {% if rejected_count %}<a class="muted small" href="/items/{{ item.id }}/rejected">{{ rejected_count }} rejected listings →</a>{% endif %}
+  </div>
+  {{ m.checks_table(checks) }}
+</section>
+
+<section>
+  <details class="card edit" {{ 'open' if not item.sources }}>
+    <summary><h2 class="inline">Edit</h2></summary>
+    <form method="post" action="/items/{{ item.id }}" class="form-grid">
+      <input type="hidden" name="sources_present" value="1">
+      <label>Name <input name="name" value="{{ item.name }}" required></label>
+      <label>Brand <input name="brand" value="{{ item.brand }}"></label>
+      <label class="span-2">Search query <input name="search_query" value="{{ item.search_query }}" required>
+        <span class="hint">What's typed into each marketplace's search. Brand + model works best.</span></label>
+      <label>Category
+        <select name="category">{% for c in ['tops','bottoms','outerwear','shoes','bags','accessories','other'] %}<option value="{{ c }}" {{ 'selected' if c == item.category }}>{{ c|capitalize }}</option>{% endfor %}</select>
+      </label>
+      <label>Colour <input name="color" value="{{ item.color }}"></label>
+      <label>Size <input name="size" value="{{ item.size }}" placeholder="{{ wanted_size or 'any' }}">
+        <span class="hint">Blank = your default from Settings.</span></label>
+      <label>Max price ({{ currency }}) <input name="max_price" inputmode="decimal" value="{{ item.max_price if item.max_price is not none else '' }}" placeholder="no limit"></label>
+      <label>How often
+        <select name="interval_minutes">{% for mins in INTERVAL_CHOICES %}<option value="{{ mins }}" {{ 'selected' if mins == item.interval_minutes }}>{{ mins|interval|capitalize }}</option>{% endfor %}</select>
+      </label>
+      <fieldset><legend>Where</legend>
+        {% for key, label in source_labels.items() %}
+          <label class="check"><input type="checkbox" name="source" value="{{ key }}" {{ 'checked' if key in item.sources.split(',') }}> {{ label }}{% if statuses[key] and not statuses[key].ok %} <span class="warn small">(not working)</span>{% endif %}</label>
+        {% endfor %}
+      </fieldset>
+      <label class="span-2">Description <textarea name="description" rows="2">{{ item.description }}</textarea>
+        <span class="hint">Used when judging listings. Mention details that tell the real thing apart.</span></label>
+      <label class="span-2">Notes for the matcher <textarea name="notes" rows="2" placeholder="e.g. only the 2019 version, no faded ones">{{ item.notes }}</textarea></label>
+      <div class="span-2 form-actions">
+        <button class="btn btn-primary">Save</button>
+        <button class="btn btn-ghost danger" formaction="/items/{{ item.id }}/delete" formnovalidate
+                onclick="return confirm('Delete this item and its history?')">Delete item</button>
+      </div>
+    </form>
+  </details>
+</section>
+{% endblock %}
