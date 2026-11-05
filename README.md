@@ -52,6 +52,29 @@ APP_PASSWORD=demo INGEST_TOKEN=demo DATA_DIR=./demo-data SCHEDULER=off uvicorn w
 Then in the app's **Settings** page: your sizes, eBay country, and an ntfy topic for notifications
 (install the free **ntfy** app on your phone and subscribe to the same topic name).
 
+## Your sizes
+
+The **Sizes** page holds your sizes for tops, outerwear, trousers (waist + inseam) and shoes,
+plus **brand-specific sizes** (`Our Legacy: 48`) and free-text fit notes. Every search uses
+them automatically, in this order: the item's own size, then your size for that brand, then
+your size for the category.
+
+## Shops
+
+The **Shops** page holds your favourite stores and sites (one address per line, or
+`Name | address`). Each is checked when added:
+
+- **Shopify stores** (most independent menswear shops) are searched with the store's own
+  product search. New products are opened once to see which sizes are **in stock** and whether
+  they're **on sale**.
+- **News and deal sites** (Heddels, Gear Patrol, Uncrate…) have their RSS feed read. Posts
+  mentioning a wishlist item are passed to the matcher, and a post specifically about it counts
+  as a deal.
+- **Everything else** (big retailers with custom sites that block automated access, such as
+  SSENSE, Huckberry or BSTN) is marked *not supported*.
+
+Tick **Shops** on an item to search them all, or use "Yes, use them everywhere" on the Shops page.
+
 ## Marketplaces
 
 - **eBay:** official Browse API. Reliable.

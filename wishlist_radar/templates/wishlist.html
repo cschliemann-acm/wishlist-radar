@@ -3,6 +3,13 @@
 {% block title %}Wishlist{% endblock %}
 {% block content %}
 
+{% if not has_sizes %}
+<a class="card nudge" href="/sizes">
+  <strong>Add your sizes</strong>
+  <span class="muted">so you're only alerted about things that fit: tops, trousers, shoes, and per-brand sizes. →</span>
+</a>
+{% endif %}
+
 {% if drafts %}
 <section class="inbox">
   <div class="section-head">

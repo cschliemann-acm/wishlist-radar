@@ -28,11 +28,12 @@
       {% if item.max_price and l.price and l.price > item.max_price and l.currency == currency %}
         <span class="badge badge-muted">over budget</span>
       {% endif %}
-      <span class="chip src src-{{ l.source }}">{{ source_labels.get(l.source, l.source) }}</span>
+      <span class="chip src src-{{ l.source }}">{{ l.merchant or source_labels.get(l.source, l.source) }}</span>
+      {% if l.condition and l.condition.startswith('On sale') %}<span class="badge badge-sale">Sale</span>{% endif %}
     </div>
     <a class="listing-title" href="{{ l.url }}" target="_blank" rel="noopener">{{ l.title }}</a>
     <div class="meta">
-      {% if l.size_text %}<span>Size {{ l.size_text }}</span>{% endif %}
+      {% if l.size_text %}<span>{{ l.size_text if l.size_text.startswith(('In stock', 'Sold out')) else 'Size ' ~ l.size_text }}</span>{% endif %}
       {% if l.size_ok == 'yes' %}<span class="ok">✓ your size</span>{% elif l.size_ok == 'no' %}<span class="warn">✗ wrong size</span>{% endif %}
       {% if l.condition %}<span>{{ l.condition }}</span>{% endif %}
       <span>found {{ when(l.first_seen_at) }}</span>

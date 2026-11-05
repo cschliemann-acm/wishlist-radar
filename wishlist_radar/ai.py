@@ -179,15 +179,22 @@ by" item, an accessory or part for it, a lot/bundle, or a "wanted"/"ISO" post.
 clearly doesn't, "unknown" if the listing doesn't say or no size is wanted.
 - reason: a few words.
 
+Some entries come from shops rather than resale sites: their size field lists the sizes in \
+stock ("In stock: S, M, L"), so size_ok is "yes" only if the wanted size is in that list, "no" if \
+it isn't or it's sold out. Entries with condition "Article" are posts from news/deals sites: \
+"match" only if the post is specifically about the wanted item (e.g. a deal on it or its \
+release), not a passing mention; size_ok "unknown".
+
 Return one result per listing, using its index."""
 
 
 def judge(client: anthropic.Anthropic, model: str, item: dict, wanted_size: str,
-          listings: list[dict]) -> list[Verdict]:
+          listings: list[dict], fit_notes: str = "") -> list[Verdict]:
     lines = []
     for i, l in enumerate(listings):
         price = f"{l['price']:.2f} {l['currency']}" if l.get("price") is not None else "?"
-        extra = " | ".join(x for x in (f"size: {l['size_text']}" if l.get("size_text") else "",
+        extra = " | ".join(x for x in (f"shop: {l['merchant']}" if l.get("merchant") else "",
+                                        f"size: {l['size_text']}" if l.get("size_text") else "",
                                         f"condition: {l['condition']}" if l.get("condition") else "")
                            if x)
         lines.append(f"[{i}] {l['title']} | {price}{' | ' + extra if extra else ''}")
@@ -196,7 +203,7 @@ def judge(client: anthropic.Anthropic, model: str, item: dict, wanted_size: str,
         ("name", item["name"]), ("brand", item.get("brand") or "(any)"),
         ("category", item.get("category")), ("colour", item.get("color") or "(any)"),
         ("details", item.get("description") or ""), ("user notes", item.get("notes") or ""),
-        ("wanted size", wanted_size or "(any size)"),
+        ("wanted size", wanted_size or "(any size)"), ("fit notes", fit_notes),
     ) if v)
     response = client.messages.create(
         model=model,

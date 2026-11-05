@@ -84,12 +84,34 @@ CREATE TABLE IF NOT EXISTS posts (
     created_at REAL NOT NULL
 );
 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS stores (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    url TEXT NOT NULL UNIQUE,                      -- homepage, e.g. https://www.nomanwalksalone.com
+    kind TEXT NOT NULL DEFAULT 'pending',          -- pending | shopify | feed | unsupported
+    feed_url TEXT DEFAULT '',
+    currency TEXT DEFAULT '',
+    status TEXT DEFAULT '',                        -- last detection / search message
+    enabled INTEGER NOT NULL DEFAULT 1,
+    last_ok_at REAL,
+    created_at REAL NOT NULL
+);
 """
+
+# Columns added after the first release (added to existing databases on startup)
+MIGRATIONS = [
+    "ALTER TABLE listings ADD COLUMN merchant TEXT DEFAULT ''",
+]
 
 DEFAULT_SETTINGS: dict[str, Any] = {
     "size_tops": "",
+    "size_outerwear": "",
     "size_bottoms": "",
+    "size_inseam": "",
     "size_shoes": "",
+    "size_brands": "",          # one per line: "Our Legacy: 48"
+    "size_notes": "",           # free text: fit preferences
+
     "ebay_marketplace": "EBAY_US",
     "default_interval_minutes": 60,
     "default_sources": "ebay",
@@ -108,6 +130,11 @@ class DB:
         with self.conn() as c:
             c.executescript(SCHEMA)
             c.execute("PRAGMA journal_mode=WAL")
+            for sql in MIGRATIONS:
+                try:
+                    c.execute(sql)
+                except sqlite3.OperationalError:
+                    pass  # already applied
 
     @contextmanager
     def conn(self) -> Iterator[sqlite3.Connection]:
@@ -207,6 +234,15 @@ class DB:
         return self.all(f"SELECT * FROM listings WHERE item_id = ? AND verdict IN ({marks}) "
                         f"AND dismissed = 0 ORDER BY is_deal DESC, price ASC LIMIT ?",
                         item_id, *verdicts, limit)
+
+    # --- stores -----------------------------------------------------------
+    def stores(self, enabled_only: bool = False) -> list[dict]:
+        where = "WHERE enabled = 1" if enabled_only else ""
+        return self.all(f"SELECT * FROM stores {where} ORDER BY name COLLATE NOCASE")
+
+    def update_store(self, store_id: int, **fields) -> None:
+        sets = ", ".join(f"{k} = ?" for k in fields)
+        self.run(f"UPDATE stores SET {sets} WHERE id = ?", *fields.values(), store_id)
 
     # --- checks -----------------------------------------------------------
     def checks(self, item_id: int | None = None, limit: int = 50) -> list[dict]:

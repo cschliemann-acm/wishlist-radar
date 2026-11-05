@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block title %}Sizes{% endblock %}
+{% block content %}
+<h1>Your sizes</h1>
+<p class="muted">Every search uses these automatically, so you're only alerted about things that fit. Write them the way listings do: “M”, “48”, “32”, “US 10”. For shoes, adding several systems helps (“US 10 / UK 9 / EU 44”).</p>
+
+<form method="post" action="/sizes" class="settings">
+  <section class="card">
+    <h2>Clothing</h2>
+    <div class="form-grid">
+      <label>Tops, shirts &amp; knitwear <input name="size_tops" value="{{ settings.size_tops }}" placeholder="e.g. M / 48"></label>
+      <label>Jackets &amp; outerwear <input name="size_outerwear" value="{{ settings.size_outerwear }}" placeholder="same as tops if blank">
+        <span class="hint">Leave blank to use your tops size.</span></label>
+      <label>Trousers: waist <input name="size_bottoms" value="{{ settings.size_bottoms }}" placeholder="e.g. 32"></label>
+      <label>Trousers: inseam <input name="size_inseam" value="{{ settings.size_inseam }}" placeholder="e.g. 32 (optional)"></label>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>Shoes</h2>
+    <div class="form-grid">
+      <label>Shoe size <input name="size_shoes" value="{{ settings.size_shoes }}" placeholder="e.g. US 10 / UK 9 / EU 44"></label>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>Brand-specific sizes</h2>
+    <p class="muted small">For brands that run big or small, or use their own scale. One per line, as <code>Brand: size</code>. These override the sizes above for that brand.</p>
+    <label><span class="sr-only">Brand sizes</span>
+      <textarea name="size_brands" rows="6" placeholder="Our Legacy: 48&#10;Nike: US 10.5&#10;Paraboot: UK 8.5&#10;Visvim: 3&#10;Kapital: 3">{{ settings.size_brands }}</textarea></label>
+  </section>
+
+  <section class="card">
+    <h2>Fit notes</h2>
+    <p class="muted small">Anything else the matcher should know, in plain words.</p>
+    <label><span class="sr-only">Fit notes</span>
+      <textarea name="size_notes" rows="3" placeholder="e.g. I prefer relaxed fits; a size up is fine for outerwear; no cropped trousers">{{ settings.size_notes }}</textarea></label>
+  </section>
+
+  <div class="form-actions"><button class="btn btn-primary">Save sizes</button></div>
+</form>
+<p class="muted small">An item can still have its own size: set it on the item's page under “Edit”.</p>
+{% endblock %}

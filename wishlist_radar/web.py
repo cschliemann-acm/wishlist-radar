@@ -164,7 +164,7 @@ def wishlist(request: Request):
     for d in drafts:
         d["default_size"] = engine.wanted_size({**d, "size": ""}, settings)
     upcoming = [i["next_check_at"] for i in items if i["status"] == "active" and i["next_check_at"]]
-    return render(request, "wishlist.html", items=items, drafts=drafts,
+    return render(request, "wishlist.html", items=items, drafts=drafts, has_sizes=engine.has_sizes(),
                   settings=settings, next_check=min(upcoming) if upcoming else None,
                   deal_total=sum(i["deal_count"] for i in items),
                   archived_count=len(db.items(("archived",))))
@@ -383,8 +383,7 @@ def settings_page(request: Request):
 async def save_settings(request: Request):
     engine = get_engine()
     form = await request.form()
-    values = {k: (form.get(k) or "").strip() for k in
-              ("size_tops", "size_bottoms", "size_shoes", "ebay_marketplace", "ntfy_topic")}
+    values = {k: (form.get(k) or "").strip() for k in ("ebay_marketplace", "ntfy_topic")}
     if values["ebay_marketplace"] not in MARKETPLACES:
         values.pop("ebay_marketplace")
     values["default_interval_minutes"] = int(form.get("default_interval_minutes") or 60)
@@ -394,6 +393,80 @@ async def save_settings(request: Request):
     engine.db.save_settings(values)
     flash(request, "Settings saved")
     return back("/settings")
+
+
+@app.get("/sizes", response_class=HTMLResponse)
+def sizes_page(request: Request):
+    return render(request, "sizes.html", settings=get_engine().db.settings())
+
+
+SIZE_KEYS = ("size_tops", "size_outerwear", "size_bottoms", "size_inseam", "size_shoes",
+             "size_brands", "size_notes")
+
+
+@app.post("/sizes")
+async def save_sizes(request: Request):
+    form = await request.form()
+    get_engine().db.save_settings({k: (form.get(k) or "").strip() for k in SIZE_KEYS})
+    flash(request, "Sizes saved. Every search uses them from now on.")
+    return back("/sizes")
+
+
+@app.get("/shops", response_class=HTMLResponse)
+def shops_page(request: Request):
+    engine = get_engine()
+    stores = engine.db.stores()
+    settings = engine.db.settings()
+    counts = {k: sum(1 for s in stores if s["kind"] == k) for k in ("shopify", "feed", "unsupported", "pending")}
+    tracked = engine.db.items(("active", "paused", "draft"))
+    return render(request, "shops.html", stores=stores, counts=counts,
+                  default_on="stores" in settings["default_sources"].split(","),
+                  missing=sum(1 for i in tracked if "stores" not in i["sources"].split(",")))
+
+
+@app.post("/shops/add")
+def shops_add(request: Request, text: str = Form("")):
+    n = get_engine().add_stores(text)
+    flash(request, f"Added {n} shop{'s' if n != 1 else ''}. Checking what each one supports…" if n
+          else "Nothing new to add (already added, or not a web address)", "ok" if n else "error")
+    return back("/shops")
+
+
+@app.post("/shops/redetect")
+def shops_redetect(request: Request):
+    get_engine().detect_stores_async()
+    flash(request, "Re-checking every shop…")
+    return back("/shops")
+
+
+@app.post("/shops/use-everywhere")
+def shops_use_everywhere(request: Request):
+    engine = get_engine()
+    db = engine.db
+    for i in db.items(("active", "paused", "draft")):
+        sources = [s for s in i["sources"].split(",") if s]
+        if "stores" not in sources:
+            db.update_item(i["id"], sources=",".join(sources + ["stores"]), next_check_at=time.time())
+    defaults = [s for s in db.settings()["default_sources"].split(",") if s]
+    if "stores" not in defaults:
+        db.save_settings({"default_sources": ",".join(defaults + ["stores"])})
+    flash(request, "Your shops are now searched for every item, including new ones")
+    return back("/shops")
+
+
+@app.post("/shops/{store_id}/toggle")
+def shops_toggle(request: Request, store_id: int):
+    db = get_engine().db
+    s = db.one("SELECT enabled FROM stores WHERE id = ?", store_id)
+    if s:
+        db.update_store(store_id, enabled=0 if s["enabled"] else 1)
+    return back("/shops")
+
+
+@app.post("/shops/{store_id}/delete")
+def shops_delete(request: Request, store_id: int):
+    get_engine().db.run("DELETE FROM stores WHERE id = ?", store_id)
+    return back("/shops")
 
 
 @app.post("/settings/test-notification")

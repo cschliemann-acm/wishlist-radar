@@ -5,16 +5,6 @@
 
 <form method="post" action="/settings" class="settings">
   <section class="card">
-    <h2>Your sizes</h2>
-    <p class="muted small">Used for every item in that category unless the item has its own size. Write them how listings do, e.g. “M”, “48”, “32”, “US 10”.</p>
-    <div class="form-grid three">
-      <label>Tops &amp; outerwear <input name="size_tops" value="{{ settings.size_tops }}" placeholder="e.g. M / 48"></label>
-      <label>Bottoms <input name="size_bottoms" value="{{ settings.size_bottoms }}" placeholder="e.g. 32"></label>
-      <label>Shoes <input name="size_shoes" value="{{ settings.size_shoes }}" placeholder="e.g. US 10"></label>
-    </div>
-  </section>
-
-  <section class="card">
     <h2>Searching</h2>
     <div class="form-grid">
       <label>eBay site
@@ -56,6 +46,7 @@
 
 <section class="card">
   <h2>Marketplaces</h2>
+  <p class="muted small">Your sizes are on the <a href="/sizes">Sizes</a> page, and your favourite shops on the <a href="/shops">Shops</a> page.</p>
   {% for key, src in sources.items() %}
     {% set st = statuses[key] %}
     <div class="source-row">

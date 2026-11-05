@@ -119,7 +119,8 @@ class GrailedSource:
         self.app_id, self.api_key = creds
         self._discovered_at = time.time()
 
-    def search(self, query: str, *, max_price: float | None, limit: int = 40) -> list[Listing]:
+    def search(self, query: str, *, max_price: float | None, brand: str = "",
+               limit: int = 40) -> list[Listing]:
         manual = bool(os.getenv("GRAILED_ALGOLIA_API_KEY"))
         if not self.app_id or (not manual and time.time() - self._discovered_at > 6 * 3600):
             self._discover()

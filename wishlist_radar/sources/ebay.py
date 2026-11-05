@@ -100,7 +100,8 @@ class EbaySource:
         self._token_expires = time.time() + body.get("expires_in", 7200)
         return self._token
 
-    def search(self, query: str, *, max_price: float | None, limit: int = 50) -> list[Listing]:
+    def search(self, query: str, *, max_price: float | None, brand: str = "",
+               limit: int = 50) -> list[Listing]:
         params = {"q": query, "limit": str(limit), "sort": "newlyListed",
                   "filter": "buyingOptions:{FIXED_PRICE|AUCTION|BEST_OFFER}"}
         if max_price:

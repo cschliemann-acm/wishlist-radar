@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m with context %}
+{% block title %}Shops{% endblock %}
+{% block content %}
+<h1>Shops</h1>
+<p class="muted">Your favourite stores and sites. Each wishlist item with <strong>Shops</strong> ticked is searched in all of them, along with eBay. Shopify stores show which sizes are in stock and whether something's on sale. News sites are watched for posts about your items.</p>
+
+{% if stores and (missing or not default_on) %}
+<form class="card nudge row-nudge" method="post" action="/shops/use-everywhere">
+  <span><strong>Search these shops for every item?</strong>
+    <span class="muted">{% if missing %}{{ missing }} item{{ 's' if missing != 1 }} on your wishlist {{ "don't" if missing != 1 else "doesn't" }} include them yet.{% else %}New items will include them too.{% endif %}</span></span>
+  <button class="btn btn-primary btn-sm">Yes, use them everywhere</button>
+</form>
+{% endif %}
+
+<form class="card add-shops" method="post" action="/shops/add">
+  <h2>Add shops</h2>
+  <p class="muted small">One per line: a web address, or <code>Name | address</code>. Each one is checked automatically to see what it supports.</p>
+  <textarea name="text" rows="5" required placeholder="No Man Walks Alone | nomanwalksalone.com&#10;Haven | havenshop.com&#10;Heddels | heddels.com"></textarea>
+  <div class="form-actions"><button class="btn btn-primary">Add</button></div>
+</form>
+
+{% if stores %}
+<section>
+  <div class="section-head row">
+    <div>
+      <h2>Your shops <span class="count">{{ stores|length }}</span></h2>
+      <p class="muted small">{{ counts.shopify }} searchable store{{ 's' if counts.shopify != 1 }} · {{ counts.feed }} news site{{ 's' if counts.feed != 1 }} · {{ counts.unsupported }} not supported{% if counts.pending %} · {{ counts.pending }} checking…{% endif %}</p>
+    </div>
+    <form method="post" action="/shops/redetect"><button class="btn btn-sm">Re-check all</button></form>
+  </div>
+
+  <div class="shop-list" {% if counts.pending %}data-pending{% endif %}>
+    {% for s in stores %}
+    <div class="shop {{ 'is-off' if not s.enabled }} kind-{{ s.kind }}">
+      <div class="shop-main">
+        <a class="shop-name" href="{{ s.url }}" target="_blank" rel="noopener">{{ s.name }}</a>
+        <span class="muted small">{{ s.url.split('//', 1)[1] }}</span>
+      </div>
+      <div class="shop-kind">
+        {% if s.kind == 'shopify' %}<span class="badge badge-ok">Searchable</span>
+        {% elif s.kind == 'feed' %}<span class="badge badge-info">News feed</span>
+        {% elif s.kind == 'pending' %}<span class="badge badge-muted"><span class="pulse"></span> Checking</span>
+        {% else %}<span class="badge badge-warn">Not supported</span>{% endif %}
+      </div>
+      <div class="shop-status small muted">
+        {{ s.status }}{% if s.last_ok_at %} · last searched {{ m.when(s.last_ok_at) }}{% endif %}
+      </div>
+      <div class="shop-actions">
+        {% if s.kind in ('shopify', 'feed') %}
+        <form method="post" action="/shops/{{ s.id }}/toggle"><button class="btn btn-sm {{ '' if s.enabled else 'btn-ghost' }}">{{ 'On' if s.enabled else 'Off' }}</button></form>
+        {% endif %}
+        <form method="post" action="/shops/{{ s.id }}/delete"><button class="btn btn-sm btn-ghost" aria-label="Remove {{ s.name }}" title="Remove">✕</button></form>
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+  {% if counts.unsupported %}
+  <p class="muted small">“Not supported” usually means a big retailer with its own website that blocks automated searches (SSENSE, Huckberry, BSTN and similar). Their items often show up on eBay and Grailed anyway, and their deals get covered by news sites like Heddels.</p>
+  {% endif %}
+</section>
+{% endif %}
+{% endblock %}

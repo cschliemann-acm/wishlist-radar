@@ -50,3 +50,8 @@ document.querySelectorAll("form[data-busy]").forEach((form) => {
 if (location.pathname === "/" && !document.querySelector(".inbox")) {
   setInterval(() => { if (document.visibilityState === "visible") location.reload(); }, 60000);
 }
+
+// Shops page: refresh while shops are still being checked.
+if (document.querySelector("[data-pending]")) {
+  setTimeout(() => location.reload(), 4000);
+}

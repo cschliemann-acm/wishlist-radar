@@ -25,7 +25,7 @@ db_path = data_dir / "wishlist.db"
 if db_path.exists():
     db_path.unlink()
 db = DB(db_path)
-db.save_settings({"size_tops": "M / 48", "size_bottoms": "32", "size_shoes": "US 10",
+db.save_settings({"size_tops": "M / 48", "size_bottoms": "32", "size_shoes": "US 10 / UK 9 / EU 44",
                   "default_sources": "ebay,grailed", "ntfy_topic": "caspar-deals-8f3k2"})
 now = time.time()
 random.seed(4)
@@ -107,4 +107,23 @@ db.create_item(status="draft", name="Suede Work Jacket", brand="Margaret Howell"
 db.run("INSERT INTO posts (url, kind, summary, item_count, created_at) VALUES (?,?,?,?,?)",
        "https://www.instagram.com/reel/EXAMPLE/", "instagram",
        "Autumn outfit with a suede chore jacket and pleated trousers", 1, now - 3600)
+for name, url, kind, status in [
+    ("No Man Walks Alone", "https://www.nomanwalksalone.com", "shopify", "Shopify store · prices in USD"),
+    ("Haven", "https://havenshop.com", "shopify", "Shopify store · prices in USD"),
+    ("Story mfg.", "https://storymfg.com", "shopify", "Shopify store · prices in USD"),
+    ("Heddels", "https://www.heddels.com", "feed", "News/deals site · reading its RSS feed"),
+    ("Gear Patrol", "https://www.gearpatrol.com", "feed", "News/deals site · reading its RSS feed"),
+    ("SSENSE", "https://www.ssense.com", "unsupported", "The site blocks automated access (403)"),
+    ("Union Los Angeles", "https://unionlosangeles.com", "pending", "Checking…"),
+]:
+    db.run("INSERT INTO stores (name, url, kind, status, currency, last_ok_at, created_at) VALUES (?,?,?,?,?,?,?)",
+           name, url, kind, status, "USD", now - 1500 if kind in ("shopify", "feed") else None, now)
+db.save_settings({"size_brands": "Our Legacy: 48\nNike: US 10.5", "default_sources": "ebay,stores"})
+db.run("UPDATE items SET sources = sources || ',stores' WHERE status != 'draft'")
+db.add_listing(1, "stores", listing_id="nmwa:box-shirt", title="Our Legacy · Box Shirt Black Silk",
+               price=156, currency="USD", size_text="In stock: 48, 50", condition="On sale (was 260)",
+               url="https://www.nomanwalksalone.com/products/box-shirt", image_url=img("shop1", 300, 300),
+               merchant="No Man Walks Alone")
+db.run("UPDATE listings SET verdict='match', score=0.97, size_ok='yes', is_deal=1, reason='Same shirt, 48 in stock', "
+       "first_seen_at=? WHERE listing_id='nmwa:box-shirt'", now - 300)
 print(f"Demo data written to {db_path}")

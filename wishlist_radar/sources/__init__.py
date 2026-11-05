@@ -17,6 +17,7 @@ class Listing:
     size_text: str = ""
     condition: str = ""
     listed_at: float | None = None  # unix time, if the marketplace reports it
+    merchant: str = ""              # shop name, for listings from your shops
 
 
 @dataclass
@@ -32,4 +33,4 @@ class Source(Protocol):
 
     def status(self) -> SourceStatus: ...
 
-    def search(self, query: str, *, max_price: float | None, limit: int = 50) -> list[Listing]: ...
+    def search(self, query: str, *, max_price: float | None, brand: str = "") -> list[Listing]: ...

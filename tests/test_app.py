@@ -24,7 +24,7 @@ class FakeSource:
     def status(self):
         return SourceStatus(True, "fake")
 
-    def search(self, query, *, max_price, limit=50):
+    def search(self, query, *, max_price, brand="", limit=50):
         self.calls += 1
         if self.error:
             raise RuntimeError(self.error)
@@ -47,7 +47,7 @@ def fake_judge(monkeypatch):
     """Judge: titles containing 'Box Shirt' match; size 50 is the wrong size."""
     calls = []
 
-    def judge(client, model, item, wanted_size, listings):
+    def judge(client, model, item, wanted_size, listings, **kw):
         calls.append((wanted_size, [l["title"] for l in listings]))
         out = []
         for i, l in enumerate(listings):
@@ -118,7 +118,7 @@ def test_judge_failure_leaves_listings_pending_for_next_time(tmp_path, monkeypat
     assert eng.db.one("SELECT verdict FROM listings")["verdict"] == "pending"
     assert "overloaded" in eng.db.checks(item_id)[0]["error"]
 
-    monkeypatch.setattr(ai, "judge", lambda c, m, item, size, ls: [
+    monkeypatch.setattr(ai, "judge", lambda c, m, item, size, ls, **kw: [
         ai.Verdict(index=0, verdict="match", score=0.9, size_ok="unknown", reason="ok")])
     eng.check_item(item_id)
     assert eng.db.one("SELECT verdict, is_deal FROM listings") == {"verdict": "match", "is_deal": 1}
@@ -219,12 +219,32 @@ def test_activate_draft_and_edit_item(client):
         ("active", 250.0, "L", 180)
     assert item["sources"] == "ebay,grailed" and item["next_check_at"] <= time.time()
 
-    c.post("/settings", data={"size_tops": "M", "ebay_marketplace": "EBAY_GB",
-                              "default_interval_minutes": "30", "default_source": "ebay",
-                              "min_match_score": "0.8"})
+    c.post("/sizes", data={"size_tops": "M", "size_shoes": "US 10", "size_brands": "Nike: US 10.5"})
+    c.post("/settings", data={"ebay_marketplace": "EBAY_GB", "default_interval_minutes": "30",
+                              "default_source": "ebay", "min_match_score": "0.8"})
     s = eng.db.settings()
-    assert (s["size_tops"], s["ebay_marketplace"], s["min_match_score"]) == ("M", "EBAY_GB", 0.8)
-    assert eng.currency() == "GBP"
+    # Saving Settings must not wipe the sizes
+    assert (s["size_tops"], s["size_shoes"], s["size_brands"]) == ("M", "US 10", "Nike: US 10.5")
+    assert (s["ebay_marketplace"], s["min_match_score"]) == ("EBAY_GB", 0.8)
+    assert eng.currency() == "GBP" and eng.has_sizes()
+
+
+def test_shops_pages_and_use_everywhere(client, monkeypatch):
+    c, eng = client
+    c.post("/login", data={"password": "pw"})
+    monkeypatch.setattr(eng, "detect_stores_async", lambda only_pending=False: None)
+    c.post("/shops/add", data={"text": "Haven | havenshop.com\nheddels.com"})
+    assert len(eng.db.stores()) == 2
+    item_id = eng.db.create_item(status="active", name="Shoe", search_query="shoe", sources="ebay")
+    r = c.get("/shops")
+    assert r.status_code == 200 and "Search these shops for every item" in r.text
+    c.post("/shops/use-everywhere")
+    assert eng.db.item(item_id)["sources"] == "ebay,stores"
+    assert "stores" in eng.db.settings()["default_sources"]
+    sid = eng.db.stores()[0]["id"]
+    c.post(f"/shops/{sid}/toggle")
+    assert eng.db.one("SELECT enabled FROM stores WHERE id = ?", sid)["enabled"] == 0
+    assert c.get("/sizes").status_code == 200
 
 
 def test_api_ingest_requires_token(client):
@@ -232,3 +252,97 @@ def test_api_ingest_requires_token(client):
     assert c.post("/api/ingest", json={"url": "https://www.instagram.com/p/x/"}).status_code == 401
     r = c.post("/api/ingest", json={"url": "no link"}, headers={"Authorization": "Bearer tok"})
     assert r.status_code == 400
+
+
+# ---------------------------------------------------------------- sizes & shops
+def test_wanted_size_uses_brand_then_category(tmp_path):
+    eng = make_engine(tmp_path, {})
+    eng.db.save_settings({"size_tops": "M", "size_outerwear": "", "size_bottoms": "32",
+                          "size_inseam": "30", "size_shoes": "US 10",
+                          "size_brands": "Our Legacy: 48\nNike: US 10.5\nbad line"})
+    assert eng.wanted_size({"brand": "Our Legacy", "category": "tops"}) == "48"
+    assert eng.wanted_size({"brand": "Nike SB", "category": "shoes"}) == "US 10.5"
+    assert eng.wanted_size({"brand": "Asics", "category": "shoes"}) == "US 10"
+    assert eng.wanted_size({"brand": "", "category": "outerwear"}) == "M"   # falls back to tops
+    assert eng.wanted_size({"brand": "", "category": "bottoms"}) == "W32 L30"
+    assert eng.wanted_size({"brand": "", "category": "bags"}) == ""
+    assert eng.wanted_size({"size": "XL", "brand": "Our Legacy", "category": "tops"}) == "XL"
+
+
+def test_shopify_parsing_and_sizes_in_stock():
+    from wishlist_radar.sources.shops import apply_product_js, parse_suggest
+
+    body = {"resources": {"results": {"products": [{
+        "handle": "box-shirt-black", "title": "Box Shirt Black Silk", "vendor": "Our Legacy",
+        "price": "180.00", "compare_at_price_max": "260.00", "available": True,
+        "image": "//cdn.shopify.com/x.jpg"}]}}}
+    [l] = parse_suggest(body, "https://www.nomanwalksalone.com", {"currency": "USD"})
+    assert l.listing_id == "www.nomanwalksalone.com:box-shirt-black"
+    assert l.url == "https://www.nomanwalksalone.com/products/box-shirt-black"
+    assert l.title == "Our Legacy · Box Shirt Black Silk" and l.image_url.startswith("https://")
+    assert l.price == 180.0 and l.condition.startswith("On sale (was 260)")
+
+    product = {"price": 17500, "compare_at_price": 26000, "variants": [
+        {"title": "46", "available": False}, {"title": "48", "available": True},
+        {"title": "50", "available": True}]}
+    l = apply_product_js(l, product)
+    assert l.size_text == "In stock: 48, 50" and l.price == 175.0
+
+
+def test_feed_parsing_and_mention_filter():
+    from wishlist_radar.sources.shops import find_feed_url, mentions, parse_feed
+
+    page = '<head><link rel="alternate" type="application/rss+xml" href="/feed/"></head>'
+    assert find_feed_url(page, "https://www.heddels.com/") == "https://www.heddels.com/feed/"
+    now = time.strftime("%a, %d %b %Y %H:%M:%S +0000", time.gmtime())
+    rss = f"""<?xml version="1.0"?><rss version="2.0" xmlns:media="http://search.yahoo.com/mrss/">
+      <channel><item><title>Deal: Paraboot Michael derbies are 30% off</title>
+        <link>https://www.heddels.com/2026/11/paraboot-deal/</link><pubDate>{now}</pubDate>
+        <description>&lt;p&gt;The classic Michael in marron.&lt;/p&gt;</description>
+        <media:content url="https://img/x.jpg"/></item>
+      <item><title>Old post</title><link>https://www.heddels.com/old/</link>
+        <pubDate>Mon, 01 Jan 2024 10:00:00 +0000</pubDate></item></channel></rss>"""
+    posts = parse_feed(rss, {})
+    assert len(posts) == 1 and posts[0].image_url == "https://img/x.jpg"
+    assert posts[0].condition == "Article" and "marron" in posts[0].title
+    assert mentions(posts[0], "Paraboot Michael marron", "Paraboot")
+    assert not mentions(posts[0], "Nike Air Max 1 big bubble", "Nike")
+
+
+def test_shops_source_search_and_partial_failure(tmp_path, monkeypatch):
+    from wishlist_radar.sources import shops
+
+    eng = make_engine(tmp_path, None)
+    for name, url, kind in [("NMWA", "https://nmwa.example", "shopify"),
+                            ("Broken", "https://broken.example", "shopify"),
+                            ("SSENSE", "https://ssense.example", "unsupported")]:
+        eng.db.run("INSERT INTO stores (name, url, kind, currency, created_at) VALUES (?,?,?,?,?)",
+                   name, url, kind, "USD", time.time())
+
+    class FakeClient:
+        def __enter__(self): return self
+        def __exit__(self, *a): pass
+        def get(self, url, params=None):
+            import httpx
+            if "broken" in url:
+                return httpx.Response(503)
+            return httpx.Response(200, json={"resources": {"results": {"products": [
+                {"handle": "michael", "title": "Michael Marron", "vendor": "Paraboot", "price": "420.00"}]}}})
+
+    monkeypatch.setattr(shops, "_client", lambda: FakeClient())
+    src = eng.sources()["stores"]
+    found = src.search("paraboot michael", max_price=None)
+    assert [l.merchant for l in found] == ["NMWA"]
+    assert src.partial_errors == ["Broken: search returned 503"]
+    assert "Last search failed" in eng.db.one("SELECT status FROM stores WHERE name='Broken'")["status"]
+
+
+def test_add_stores_parses_lines(tmp_path, monkeypatch):
+    eng = make_engine(tmp_path, {})
+    monkeypatch.setattr(eng, "detect_stores_async", lambda only_pending=False: None)
+    n = eng.add_stores("No Man Walks Alone | nomanwalksalone.com\nhttps://www.havenshop.com/collections/new\n"
+                       "\nnot a url\nnomanwalksalone.com")
+    assert n == 2
+    stores = {s["name"]: s["url"] for s in eng.db.stores()}
+    assert stores == {"No Man Walks Alone": "https://nomanwalksalone.com",
+                      "Havenshop": "https://www.havenshop.com"}
