@@ -52,6 +52,18 @@ APP_PASSWORD=demo INGEST_TOKEN=demo DATA_DIR=./demo-data SCHEDULER=off uvicorn w
 Then in the app's **Settings** page: your sizes, eBay country, and an ntfy topic for notifications
 (install the free **ntfy** app on your phone and subscribe to the same topic name).
 
+## Sample sales
+
+The **Sales** page lists current and upcoming sample sales in NYC and online, gathered every
+6 hours from Chicmi (NYC), NYC Insider Guide, Time Out New York, 260 Sample Sale and Arlettie.
+Each page is read by Claude Haiku, which pulls out brand, dates, location, discount and whether
+it includes menswear. Add any other calendar or brand sales page at the bottom of the page.
+
+Sales for **brands you follow** go to the top and send a push notification. You follow brands on
+your wishlist and on your Sizes page automatically, plus any you list on the Sales page. For
+item-level sample-sale searches, add "260 Sample Sale (online)" and "Unionmade (archive sale)"
+from the Shops page suggestions.
+
 ## Imports
 
 Every import gets a review page (linked from the Inbox and Activity) showing what was found,

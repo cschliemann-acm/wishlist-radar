@@ -84,6 +84,36 @@ CREATE TABLE IF NOT EXISTS posts (
     created_at REAL NOT NULL
 );
 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS sale_sources (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    url TEXT NOT NULL UNIQUE,
+    region TEXT DEFAULT 'nyc',                     -- nyc | online
+    enabled INTEGER NOT NULL DEFAULT 1,
+    status TEXT DEFAULT '',
+    last_fetched_at REAL,
+    last_count INTEGER DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS sales (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    key TEXT NOT NULL UNIQUE,                      -- brand + start date, for de-duplication
+    brand TEXT NOT NULL,
+    title TEXT DEFAULT '',
+    start_date TEXT DEFAULT '',                    -- YYYY-MM-DD or '' if not announced
+    end_date TEXT DEFAULT '',
+    location TEXT DEFAULT '',
+    online INTEGER NOT NULL DEFAULT 0,
+    menswear TEXT DEFAULT 'unknown',               -- yes | no | unknown
+    discount TEXT DEFAULT '',
+    details TEXT DEFAULT '',
+    url TEXT DEFAULT '',
+    sources TEXT DEFAULT '',                       -- names of the pages it was listed on
+    matched_brands TEXT DEFAULT '',
+    first_seen_at REAL NOT NULL,
+    last_seen_at REAL NOT NULL,
+    notified_at REAL,
+    hidden INTEGER NOT NULL DEFAULT 0
+);
 CREATE TABLE IF NOT EXISTS stores (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL,
@@ -113,6 +143,8 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "size_shoes": "",
     "size_brands": "",          # one per line: "Our Legacy: 48"
     "size_notes": "",           # free text: fit preferences
+    "sale_brands": "",          # brands you follow for sample sales, one per line
+    "sales_menswear_only": True,
 
     "ebay_marketplace": "EBAY_US",
     "default_interval_minutes": 60,

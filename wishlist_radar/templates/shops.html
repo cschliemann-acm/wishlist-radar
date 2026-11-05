@@ -17,7 +17,7 @@
 <form class="card suggest" method="post" action="/shops/add-suggested">
   <h2>Suggested shops</h2>
   <p class="muted small">Ticked ones are added and checked automatically. Untick any you don't want.</p>
-  {% for group, label in [('yours', 'From your bookmarks'), ('more', 'Similar shops worth adding')] %}
+  {% for group, label in [('yours', 'From your bookmarks'), ('more', 'Similar shops worth adding'), ('sales', 'Sample-sale shops (your items get searched in their online sales)')] %}
     {% set rows = suggestions|selectattr('group', 'equalto', group)|list %}
     {% if rows %}
     <h3>{{ label }}</h3>

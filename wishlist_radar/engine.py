@@ -12,7 +12,7 @@ from pathlib import Path
 
 import anthropic
 
-from . import ai, fx, instagram, media, notify
+from . import ai, fx, instagram, media, notify, sales
 from .config import Config
 from .db import DB
 from .sources import Source, SourceStatus
@@ -343,6 +343,88 @@ class Engine:
     def check_now(self, item_id: int) -> None:
         threading.Thread(target=self.check_item, args=(item_id, "manual"), daemon=True).start()
 
+    # ------------------------------------------------------------------ sample sales
+    def ensure_sale_sources(self) -> None:
+        for name, url, region in sales.DEFAULT_SOURCES:
+            self.db.run("INSERT OR IGNORE INTO sale_sources (name, url, region) VALUES (?,?,?)",
+                        name, url, region)
+
+    def followed_brands(self) -> list[str]:
+        """Brands to flag sales for: your wishlist, your brand sizes, and your follow list."""
+        settings = self.db.settings()
+        brands = {i["brand"].strip() for i in self.db.items(("active", "paused", "draft"))
+                  if i["brand"].strip()}
+        brands |= {b.title() for b in brand_sizes(settings.get("size_brands", ""))}
+        brands |= {l.strip() for l in settings.get("sale_brands", "").splitlines() if l.strip()}
+        return sorted(brands, key=str.lower)
+
+    def refresh_sales(self, force: bool = False) -> None:
+        self.ensure_sale_sources()
+        today = time.strftime("%Y-%m-%d")
+        for src in self.db.all("SELECT * FROM sale_sources WHERE enabled = 1"):
+            fresh = src["last_fetched_at"] and time.time() - src["last_fetched_at"] < sales.REFRESH_HOURS * 3600
+            if fresh and not force:
+                continue
+            try:
+                text = sales.fetch_page_text(src["url"])
+                found = ai.extract_sales(self.client, self.c.match_model, text, src["name"], today)
+                for f in found:
+                    self._upsert_sale(f, src)
+                self.db.run("UPDATE sale_sources SET status = ?, last_fetched_at = ?, last_count = ? "
+                            "WHERE id = ?", f"{len(found)} sales found", time.time(), len(found), src["id"])
+            except Exception as e:
+                log.warning("sale source %s failed: %s", src["name"], e)
+                self.db.run("UPDATE sale_sources SET status = ?, last_fetched_at = ? WHERE id = ?",
+                            f"Couldn't read: {e}"[:200], time.time(), src["id"])
+        self.match_sales()
+
+    def _upsert_sale(self, f: ai.FoundSale, src: dict) -> None:
+        if not f.brand.strip():
+            return
+        key = sales.sale_key(f.brand, f.start_date)
+        now = time.time()
+        existing = self.db.one("SELECT * FROM sales WHERE key = ?", key)
+        if existing:
+            names = {n for n in existing["sources"].split(", ") if n} | {src["name"]}
+            self.db.run("UPDATE sales SET last_seen_at = ?, sources = ?, "
+                        "end_date = COALESCE(NULLIF(?, ''), end_date), "
+                        "url = CASE WHEN url = '' THEN ? ELSE url END, "
+                        "discount = CASE WHEN discount = '' THEN ? ELSE discount END WHERE id = ?",
+                        now, ", ".join(sorted(names)), f.end_date, f.url, f.discount, existing["id"])
+            return
+        self.db.run("INSERT INTO sales (key, brand, title, start_date, end_date, location, online, "
+                    "menswear, discount, details, url, sources, first_seen_at, last_seen_at) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    key, f.brand.strip(), f.title, f.start_date, f.end_date, f.location,
+                    int(f.online), f.menswear, f.discount, f.details, f.url or src["url"],
+                    src["name"], now, now)
+
+    def match_sales(self) -> None:
+        brands = self.followed_brands()
+        settings = self.db.settings()
+        for s in self.db.all("SELECT * FROM sales WHERE hidden = 0"):
+            hits = sales.brand_matches(f"{s['brand']} {s['title']}", brands)
+            matched = ", ".join(hits)
+            if matched != s["matched_brands"]:
+                self.db.run("UPDATE sales SET matched_brands = ? WHERE id = ?", matched, s["id"])
+            if hits and not s["notified_at"] and sales.status_of(s) != "past" \
+                    and settings.get("ntfy_topic"):
+                when = " – ".join(d for d in (s["start_date"], s["end_date"]) if d) or "dates TBA"
+                try:
+                    notify.send(settings["ntfy_topic"], title=f"Sample sale: {s['brand']}",
+                                message=f"{s['title']}\n{when}"
+                                        + (f" · {s['location']}" if s["location"] else " · online"
+                                           if s["online"] else "")
+                                        + (f"\n{s['discount']}" if s["discount"] else ""),
+                                url=s["url"])
+                    self.db.run("UPDATE sales SET notified_at = ? WHERE id = ?", time.time(), s["id"])
+                except Exception:
+                    log.exception("sale notification failed")
+
+    def refresh_sales_async(self, force: bool = True) -> None:
+        threading.Thread(target=self.refresh_sales, args=(force,), daemon=True,
+                         name="sales").start()
+
     # ------------------------------------------------------------------ scheduler
     def start_scheduler(self) -> None:
         self.db.run("UPDATE items SET checking = 0 WHERE checking = 1")  # left over from a restart
@@ -360,6 +442,7 @@ class Engine:
                     if self._stop.is_set():
                         break
                     self.check_item(item["id"])
+                self.refresh_sales()  # no-op unless a source is due (every few hours)
             except Exception:
                 log.exception("scheduler tick failed")
             self._stop.wait(TICK_SECONDS)

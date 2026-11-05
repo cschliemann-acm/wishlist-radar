@@ -418,3 +418,63 @@ def test_import_page_renders(client, monkeypatch):
     assert r.headers["location"].startswith("/imports/")
     page = c.get(r.headers["location"])
     assert page.status_code == 200 and "Paraboot Michael" in page.text
+
+
+# ---------------------------------------------------------------- sample sales
+def test_sales_helpers():
+    from datetime import date
+    from wishlist_radar import sales
+
+    text = sales.html_to_text('<html><script>x()</script><h2>Sales</h2><p><a href="/e/ol">Our Legacy '
+                              'Sample Sale</a> Nov 12&ndash;15</p></html>', "https://site.com/sales/")
+    assert "Our Legacy Sample Sale (https://site.com/e/ol)" in text and "x()" not in text
+    assert sales.brand_matches("260 Sample Sale: Our Legacy, A.P.C.", ["Our Legacy", "Nike"]) == ["Our Legacy"]
+    assert sales.brand_matches("Legacy Home Goods", ["Our Legacy"]) == []
+    today = date(2026, 11, 5)
+    assert sales.status_of({"start_date": "2026-11-04", "end_date": "2026-11-08"}, today) == "now"
+    assert sales.status_of({"start_date": "2026-11-12", "end_date": ""}, today) == "upcoming"
+    assert sales.status_of({"start_date": "2026-10-01", "end_date": "2026-10-03"}, today) == "past"
+    assert sales.status_of({"start_date": "", "end_date": ""}, today) == "tba"
+
+
+def test_refresh_sales_dedupes_matches_and_notifies(tmp_path, monkeypatch):
+    from wishlist_radar import notify, sales
+
+    eng = make_engine(tmp_path, {})
+    eng.db.create_item(status="active", name="Box Shirt", brand="Our Legacy", search_query="q")
+    eng.db.save_settings({"sale_brands": "Kapital", "ntfy_topic": "t"})
+    monkeypatch.setattr(sales, "fetch_page_text", lambda url: "page text " * 50)
+    sent = []
+    monkeypatch.setattr(notify, "send", lambda topic, **kw: sent.append(kw["title"]))
+
+    def extract(client, model, text, source_name, today):
+        return [ai.FoundSale(brand="Our Legacy", title="Our Legacy Sample Sale", start_date="2099-11-12",
+                             end_date="2099-11-15", location="261 W 36th St", online=False,
+                             menswear="yes", discount="up to 70% off", details="", url="https://x/ol"),
+                ai.FoundSale(brand="Sandro", title="Sandro", start_date="2099-11-20", end_date="",
+                             location="", online=True, menswear="no", discount="", details="", url="")]
+
+    monkeypatch.setattr(ai, "extract_sales", extract)
+    eng.refresh_sales(force=True)
+    rows = eng.db.all("SELECT * FROM sales ORDER BY brand")
+    assert [r["brand"] for r in rows] == ["Our Legacy", "Sandro"]          # 5 sources, deduped
+    assert len(rows[0]["sources"].split(", ")) == len(sales.DEFAULT_SOURCES)
+    assert rows[0]["matched_brands"] == "Our Legacy" and rows[1]["matched_brands"] == ""
+    assert sent == ["Sample sale: Our Legacy"]                             # notified once
+    eng.refresh_sales(force=True)
+    assert sent == ["Sample sale: Our Legacy"]
+    assert "Kapital" in eng.followed_brands() and "Our Legacy" in eng.followed_brands()
+
+
+def test_sales_page_renders_and_filters(client):
+    c, eng = client
+    c.post("/login", data={"password": "pw"})
+    now = time.time()
+    for brand, online, menswear in [("Our Legacy", 0, "yes"), ("Sandro", 1, "no"), ("Kapital", 1, "yes")]:
+        eng.db.run("INSERT INTO sales (key, brand, title, start_date, online, menswear, url, sources, "
+                   "first_seen_at, last_seen_at) VALUES (?,?,?,?,?,?,?,?,?,?)", brand, brand, brand,
+                   "2099-01-01", online, menswear, "https://x", "Chicmi", now, now)
+    page = c.get("/sales").text
+    assert "Our Legacy" in page and "Kapital" in page and "Sandro" not in page   # menswear-only default
+    online = c.get("/sales?show=online").text
+    assert "Kapital" in online and ">Our Legacy<" not in online

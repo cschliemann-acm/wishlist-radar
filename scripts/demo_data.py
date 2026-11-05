@@ -137,4 +137,28 @@ db.add_listing(1, "stores", listing_id="nmwa:box-shirt", title="Our Legacy · Bo
                merchant="No Man Walks Alone")
 db.run("UPDATE listings SET verdict='match', score=0.97, size_ok='yes', is_deal=1, reason='Same shirt, 48 in stock', "
        "first_seen_at=? WHERE listing_id='nmwa:box-shirt'", now - 300)
+from datetime import date, timedelta  # noqa: E402
+d = lambda n: (date.today() + timedelta(days=n)).isoformat() if n is not None else ""  # noqa: E731
+for brand, title, start, end, loc, online, mens, disc, src, matched in [
+    ("Our Legacy", "Our Legacy Sample Sale", -1, 2, "261 W 36th St, Floor 2", 0, "yes", "up to 70% off", "Chicmi: New York, NYC Insider Guide", "Our Legacy"),
+    ("Nike", "Nike Employee & Friends Online Sale", 3, 6, "", 1, "yes", "40% off", "Chicmi: New York", "Nike"),
+    ("260 Sample Sale: Engineered Garments, Needles", "Engineered Garments + Needles", 0, 4, "704 Broadway, NoHo", 0, "yes", "up to 80% off", "260 Sample Sale", ""),
+    ("A.P.C.", "A.P.C. Sample Sale", 6, 9, "150 Greene St, SoHo", 0, "yes", "up to 75% off", "Time Out New York, Chicmi: New York", ""),
+    ("Issey Miyake", "Issey Miyake / Homme Plissé", 9, 11, "Arlettie, 37 W 26th St", 0, "yes", "", "Arlettie (US)", ""),
+    ("Rag & Bone", "Rag & Bone Online Archive Sale", 2, 5, "", 1, "yes", "up to 65% off", "NYC Insider Guide", ""),
+    ("Margaret Howell", "Margaret Howell Sample Sale", None, None, "SoHo", 0, "yes", "", "Chicmi: New York", ""),
+]:
+    db.run("INSERT INTO sales (key, brand, title, start_date, end_date, location, online, menswear, discount, url, "
+           "sources, matched_brands, first_seen_at, last_seen_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+           brand, brand, title, d(start), d(end), loc, online, mens, disc, "https://www.chicmi.com/new-york/sales/",
+           src, matched, now, now)
+for name, url, region, status in [
+    ("Chicmi: New York", "https://www.chicmi.com/new-york/sales/", "nyc", "14 sales found"),
+    ("NYC Insider Guide", "https://nycinsiderguide.com/nyc-sample-sale", "nyc", "9 sales found"),
+    ("Time Out New York", "https://www.timeout.com/newyork/shopping/sample-sales-in-nyc-this-week", "nyc", "5 sales found"),
+    ("260 Sample Sale", "https://260samplesale.com/", "nyc", "3 sales found"),
+    ("Arlettie (US)", "https://www.arlettie.com/us/en", "nyc", "Couldn't read: page has almost no text (it probably needs JavaScript to load)"),
+]:
+    db.run("INSERT INTO sale_sources (name, url, region, status, last_fetched_at) VALUES (?,?,?,?,?)",
+           name, url, region, status, now - 2400)
 print(f"Demo data written to {db_path}")

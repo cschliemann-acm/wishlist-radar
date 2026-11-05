@@ -1,0 +1,103 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m with context %}
+{% block title %}Sample sales{% endblock %}
+
+{% macro sale_row(s) -%}
+<div class="sale {{ 'is-mine' if s.matched_brands }}">
+  <div class="sale-date">
+    {% if s.start_date %}
+      {% set sd = s.start_date.split('-') %}
+      <span class="mon">{{ ['','Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][sd[1]|int] }}</span>
+      <span class="day">{{ sd[2]|int }}{% if s.end_date and s.end_date != s.start_date %}<small>–{{ s.end_date.split('-')[2]|int }}</small>{% endif %}</span>
+    {% else %}<span class="mon">TBA</span>{% endif %}
+  </div>
+  <div class="sale-main">
+    <div class="sale-top">
+      <a class="sale-brand" href="{{ s.url }}" target="_blank" rel="noopener">{{ s.brand }}</a>
+      {% if s.status == 'now' %}<span class="badge badge-deal">On now</span>{% endif %}
+      {% if s.matched_brands %}<span class="badge badge-sale">Your brand</span>{% endif %}
+      <span class="chip">{{ 'Online' if s.online else 'NYC' }}</span>
+    </div>
+    {% if s.title and s.title|lower != s.brand|lower %}<div class="sale-title">{{ s.title }}</div>{% endif %}
+    <div class="meta">
+      {% if s.discount %}<span class="ok">{{ s.discount }}</span>{% endif %}
+      {% if s.location %}<span>{{ s.location }}</span>{% endif %}
+      {% if s.details %}<span>{{ s.details }}</span>{% endif %}
+      <span>via {{ s.sources }}</span>
+    </div>
+  </div>
+  <div class="sale-actions">
+    <a class="btn btn-sm" href="{{ s.url }}" target="_blank" rel="noopener">Details</a>
+    <form method="post" action="/sales/{{ s.id }}/hide"><button class="btn btn-sm btn-ghost" title="Hide this sale" aria-label="Hide">✕</button></form>
+  </div>
+</div>
+{%- endmacro %}
+
+{% block content %}
+<div class="section-head row">
+  <div>
+    <h1>Sample sales</h1>
+    <p class="muted">NYC and online, gathered from the main sale calendars every few hours{% if last_fetched %} · last checked {{ m.when(last_fetched) }}{% endif %}.</p>
+  </div>
+  <form method="post" action="/sales/refresh"><button class="btn btn-sm">Refresh now</button></form>
+</div>
+
+<nav class="tabs" aria-label="Filter">
+  {% for key, label in [('all', 'All'), ('nyc', 'In NYC'), ('online', 'Online')] %}
+    <a href="/sales?show={{ key }}" class="tab {{ 'on' if show == key }}">{{ label }}</a>
+  {% endfor %}
+</nav>
+
+{% if mine %}
+<section class="card mine">
+  <h2>Your brands <span class="count">{{ mine|length }}</span></h2>
+  <p class="muted small">Sales for brands you follow. You get a notification when a new one appears.</p>
+  {% for s in mine %}{{ sale_row(s) }}{% endfor %}
+</section>
+{% endif %}
+
+{% for label, rows in groups if rows %}
+<section>
+  <div class="section-head"><h2>{{ label }} <span class="count">{{ rows|length }}</span></h2></div>
+  <div class="sale-list">{% for s in rows %}{{ sale_row(s) }}{% endfor %}</div>
+</section>
+{% endfor %}
+{% if not total %}
+<div class="card empty">
+  <h2>No sales yet</h2>
+  <p class="muted">The calendars are read every few hours. Tap “Refresh now” to check straight away, then reload this page in a minute.</p>
+</div>
+{% endif %}
+
+<section class="card">
+  <h2>Brands you follow</h2>
+  <p class="muted small">Sales for these brands go to the top and send a notification. Brands on your wishlist and on your Sizes page are followed automatically{% if followed %}: <strong>{{ followed|join(', ') }}</strong>{% endif %}.</p>
+  <form method="post" action="/sales/brands" class="follow-form">
+    <label>Also follow (one per line)
+      <textarea name="sale_brands" rows="4" placeholder="Engineered Garments&#10;Kapital&#10;Auralee&#10;Visvim">{{ settings.sale_brands }}</textarea></label>
+    <label class="check"><input type="checkbox" name="menswear_only" value="1" {{ 'checked' if settings.sales_menswear_only }}> Hide sales that are clearly women's-only or homeware</label>
+    <div class="form-actions"><button class="btn btn-primary">Save</button></div>
+  </form>
+</section>
+
+<section class="card">
+  <h2>Where sales come from</h2>
+  {% for s in sources %}
+    <div class="source-row">
+      <a href="{{ s.url }}" target="_blank" rel="noopener" class="shop-name">{{ s.name }}</a>
+      <span class="chip">{{ 'Online' if s.region == 'online' else 'NYC' }}</span>
+      <span class="dot {{ 'dot-ok' if s.status and not s.status.startswith('Couldn') else 'dot-bad' if s.status else '' }}"></span>
+      <span class="small muted grow">{{ s.status or 'Not checked yet' }}{% if s.last_fetched_at %} · {{ m.when(s.last_fetched_at) }}{% endif %}</span>
+      <form method="post" action="/sales/sources/{{ s.id }}/toggle"><button class="btn btn-sm {{ '' if s.enabled else 'btn-ghost' }}">{{ 'On' if s.enabled else 'Off' }}</button></form>
+      <form method="post" action="/sales/sources/{{ s.id }}/delete"><button class="btn btn-sm btn-ghost" aria-label="Remove">✕</button></form>
+    </div>
+  {% endfor %}
+  <form method="post" action="/sales/sources/add" class="add-source">
+    <label class="grow">Add a page that lists sales <input name="url" placeholder="https://… (a calendar, or a brand's sales page)" required></label>
+    <label>Name <input name="name" placeholder="optional"></label>
+    <label>Where <select name="region"><option value="nyc">NYC</option><option value="online">Online</option></select></label>
+    <button class="btn">Add</button>
+  </form>
+  <p class="muted small">Your items are also searched in online sample sales: add “260 Sample Sale (online)” and “Unionmade (archive sale)” from the suggestions on the <a href="/shops">Shops</a> page.</p>
+</section>
+{% endblock %}

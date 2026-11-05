@@ -22,7 +22,7 @@ from pydantic import BaseModel
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.middleware.sessions import SessionMiddleware
 
-from . import fx
+from . import fx, sales as sales_mod
 from .config import load_config
 from .db import DB, ITEM_FIELDS
 from .engine import INTERVAL_CHOICES, Engine
@@ -437,6 +437,87 @@ async def save_settings(request: Request):
     engine.db.save_settings(values)
     flash(request, "Settings saved")
     return back("/settings")
+
+
+# ---------------------------------------------------------------------- sample sales
+@app.get("/sales", response_class=HTMLResponse)
+def sales_page(request: Request, show: str = "all"):
+    engine = get_engine()
+    engine.ensure_sale_sources()
+    settings = engine.db.settings()
+    rows = engine.db.all("SELECT * FROM sales WHERE hidden = 0 ORDER BY "
+                         "CASE WHEN start_date = '' THEN 1 ELSE 0 END, start_date, brand")
+    for r in rows:
+        r["status"] = sales_mod.status_of(r)
+    rows = [r for r in rows if r["status"] != "past"]
+    if settings["sales_menswear_only"]:
+        rows = [r for r in rows if r["menswear"] != "no" or r["matched_brands"]]
+    if show == "nyc":
+        rows = [r for r in rows if not r["online"]]
+    elif show == "online":
+        rows = [r for r in rows if r["online"]]
+    sources = engine.db.all("SELECT * FROM sale_sources ORDER BY name")
+    fetched = [s["last_fetched_at"] for s in sources if s["last_fetched_at"]]
+    return render(request, "sales.html", show=show, settings=settings,
+                  mine=[r for r in rows if r["matched_brands"]],
+                  groups=[("On now", [r for r in rows if r["status"] == "now"]),
+                          ("Coming up", [r for r in rows if r["status"] == "upcoming"]),
+                          ("Dates to be announced", [r for r in rows if r["status"] == "tba"])],
+                  total=len(rows), sources=sources, last_fetched=max(fetched) if fetched else None,
+                  followed=engine.followed_brands())
+
+
+@app.post("/sales/refresh")
+def sales_refresh(request: Request):
+    get_engine().refresh_sales_async(force=True)
+    flash(request, "Checking every sale calendar. This takes a minute; refresh the page to see new sales.")
+    return back("/sales")
+
+
+@app.post("/sales/brands")
+async def sales_brands(request: Request):
+    engine = get_engine()
+    form = await request.form()
+    engine.db.save_settings({"sale_brands": (form.get("sale_brands") or "").strip(),
+                             "sales_menswear_only": form.get("menswear_only") == "1"})
+    engine.match_sales()
+    flash(request, "Saved")
+    return back("/sales")
+
+
+@app.post("/sales/sources/add")
+def sales_source_add(request: Request, url: str = Form(...), name: str = Form(""),
+                     region: str = Form("nyc")):
+    from .sources.shops import normalize_url
+
+    url = url.strip()
+    if not url.startswith("http"):
+        url = "https://" + url
+    name = name.strip() or normalize_url(url).split("//", 1)[1].removeprefix("www.")
+    get_engine().db.run("INSERT OR IGNORE INTO sale_sources (name, url, region) VALUES (?,?,?)",
+                        name, url, "online" if region == "online" else "nyc")
+    get_engine().refresh_sales_async(force=False)
+    flash(request, f"Added {name}. Reading it now…")
+    return back("/sales")
+
+
+@app.post("/sales/sources/{source_id}/toggle")
+def sales_source_toggle(source_id: int):
+    db = get_engine().db
+    db.run("UPDATE sale_sources SET enabled = 1 - enabled WHERE id = ?", source_id)
+    return back("/sales")
+
+
+@app.post("/sales/sources/{source_id}/delete")
+def sales_source_delete(source_id: int):
+    get_engine().db.run("DELETE FROM sale_sources WHERE id = ?", source_id)
+    return back("/sales")
+
+
+@app.post("/sales/{sale_id}/hide")
+def sales_hide(sale_id: int):
+    get_engine().db.run("UPDATE sales SET hidden = 1 WHERE id = ?", sale_id)
+    return back("/sales")
 
 
 @app.get("/sizes", response_class=HTMLResponse)

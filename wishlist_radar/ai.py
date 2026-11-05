@@ -232,3 +232,84 @@ def judge(client: anthropic.Anthropic, model: str, item: dict, wanted_size: str,
     )
     results = Verdicts.model_validate(json.loads(_first_text(response))).results
     return [r for r in results if 0 <= r.index < len(listings)]
+
+
+# --------------------------------------------------------------------------- sample sales
+class FoundSale(BaseModel):
+    brand: str
+    title: str
+    start_date: str
+    end_date: str
+    location: str
+    online: bool
+    menswear: Literal["yes", "no", "unknown"]
+    discount: str
+    details: str
+    url: str
+
+
+class FoundSales(BaseModel):
+    sales: list[FoundSale]
+
+
+SALES_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "sales": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "brand": {"type": "string"},
+                    "title": {"type": "string"},
+                    "start_date": {"type": "string"},
+                    "end_date": {"type": "string"},
+                    "location": {"type": "string"},
+                    "online": {"type": "boolean"},
+                    "menswear": {"type": "string", "enum": ["yes", "no", "unknown"]},
+                    "discount": {"type": "string"},
+                    "details": {"type": "string"},
+                    "url": {"type": "string"},
+                },
+                "required": ["brand", "title", "start_date", "end_date", "location", "online",
+                             "menswear", "discount", "details", "url"],
+                "additionalProperties": False,
+            },
+        }
+    },
+    "required": ["sales"],
+    "additionalProperties": False,
+}
+
+SALES_SYSTEM = """You read pages that list sample sales and pull out each individual sale.
+
+For every distinct sale on the page that is happening now or in the future (or whose dates \
+aren't announced yet), return:
+- brand: the brand or designer (for multi-brand sales, the organiser plus the main brands, \
+e.g. "260 Sample Sale: Our Legacy, A.P.C.").
+- title: short name of the sale as listed.
+- start_date / end_date: YYYY-MM-DD. Infer the year from today's date (a sale "Nov 12-15" listed \
+today is this year unless that's clearly past). "" if not stated.
+- location: street address or neighbourhood for in-person sales; "" for online.
+- online: true for online sales.
+- menswear: "yes" if it includes men's clothing/shoes/accessories, "no" if clearly women's- or \
+kids-only or homeware, "unknown" otherwise.
+- discount: e.g. "up to 70% off", "" if not stated.
+- details: one short line of anything useful (RSVP needed, cash only, members' early access).
+- url: the sale's own link from the page if there is one (they appear in brackets after the \
+link text), otherwise "".
+
+Skip sales that have clearly ended, adverts, and navigation. Don't invent sales or dates."""
+
+
+def extract_sales(client: anthropic.Anthropic, model: str, page_text: str, source_name: str,
+                  today: str) -> list[FoundSale]:
+    response = client.messages.create(
+        model=model,
+        max_tokens=16000,
+        system=SALES_SYSTEM,
+        messages=[{"role": "user", "content":
+                   f"Today is {today}. Page: {source_name}\n\n<page>\n{page_text}\n</page>"}],
+        output_config={"effort": "low", "format": {"type": "json_schema", "schema": SALES_SCHEMA}},
+    )
+    return FoundSales.model_validate(json.loads(_first_text(response))).sales

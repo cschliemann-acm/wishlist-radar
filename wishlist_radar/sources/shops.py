@@ -62,6 +62,9 @@ SUGGESTED_SHOPS = [
     ("Goodhood", "goodhoodstore.com", "more"),
     ("Oi Polloi", "oipolloi.com", "more"),
     ("Nubian", "nubiantokyo.com", "more"),
+    # Sample-sale and archive-sale shops: wishlist items get searched there too
+    ("260 Sample Sale (online)", "260samplesale.com", "sales"),
+    ("Unionmade (archive sale)", "unionmadegoods.com", "sales"),
 ]
 FEED_MAX_AGE_DAYS = 14
 _STOPWORDS = {"the", "and", "with", "for", "in", "of", "a", "an", "og", "new", "men", "mens"}
