@@ -1,0 +1,70 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m with context %}
+{% block title %}Import{% endblock %}
+{% block content %}
+<a href="/activity" class="crumb">← Activity</a>
+<h1>{{ post.summary or 'Import' }}</h1>
+<p class="muted">
+  {{ {'instagram': 'Instagram post', 'screenshot': 'Screenshots', 'text': 'Description'}.get(post.kind, post.kind) }}
+  · {{ m.when(post.created_at) }}
+  {% if post.url %} · <a href="{{ post.url }}" target="_blank" rel="noopener">open post ↗</a>{% endif %}
+</p>
+{% if post.error %}<div class="flash flash-error">{{ post.error }}</div>{% endif %}
+{% for w in info.get('warnings', []) %}<div class="flash flash-error">{{ w }}</div>{% endfor %}
+
+<section class="card">
+  <h2>Found <span class="count">{{ items|length }}</span></h2>
+  {% if items %}
+  <div class="found-list">
+    {% for i in items %}
+    <a class="found" href="{{ '/' if i.status == 'draft' else '/items/' ~ i.id }}">
+      {{ m.item_image(i, "thumb") }}
+      <span class="grow">
+        {% if i.brand %}<span class="eyebrow">{{ i.brand }}</span>{% endif %}
+        <span class="item-name">{{ i.name }}</span>
+        <span class="muted small">{{ i.reason }}{% if i.confidence is not none %} · {{ (i.confidence * 100)|round|int }}% sure{% endif %}</span>
+      </span>
+      <span class="chip {{ 'status-active' if i.status == 'active' else '' }}">{{ {'draft': 'In inbox', 'active': 'Tracking', 'paused': 'Paused', 'archived': 'Archived'}[i.status] }}</span>
+    </a>
+    {% endfor %}
+  </div>
+  {% else %}
+    <p class="empty-line">Nothing found yet.</p>
+  {% endif %}
+
+  {% if post.kind != 'text' and not frames and not info %}
+  <p class="muted small rescan">This was imported before frames were saved, so it can't be re-scanned. Share the post again to scan it with the latest improvements.</p>
+  {% elif post.kind != 'text' %}
+  <form class="rescan" method="post" action="/imports/{{ post.id }}/rescan" data-busy>
+    <label>Missed something? Say what, and Claude looks again (without repeating what's above)
+      <input name="note" placeholder="e.g. the shoes, the tote bag and the cap"></label>
+    <button class="btn btn-primary">Find what it missed</button>
+  </form>
+  {% endif %}
+</section>
+
+{% if frames %}
+<section>
+  <div class="section-head"><h2>What Claude looked at</h2>
+    <p class="muted small">{{ frames|length }} frame{{ 's' if frames|length != 1 }}{% if info.get('duration') %} from a {{ info.duration|round|int }}-second video{% endif %}: one at every scene change plus one every two seconds. If something's missing here, it was only on screen very briefly.</p></div>
+  <div class="frames">
+    {% for f in frames %}
+      <a href="/imports/{{ post.id }}/files/{{ f }}" target="_blank"><img src="/imports/{{ post.id }}/files/{{ f }}" alt="Frame {{ loop.index0 }}" loading="lazy"><span>{{ loop.index0 }}</span></a>
+    {% endfor %}
+  </div>
+</section>
+{% endif %}
+
+{% if post.kind == 'instagram' %}
+<section class="card">
+  <h2>What was said</h2>
+  {% if info.get('transcript') %}<p class="transcript">{{ info.transcript }}</p>
+  {% elif transcribe_on %}<p class="muted">No speech in this video.</p>
+  {% else %}<p class="muted">Speech-to-text is off. Set <code>TRANSCRIBE=groq</code> and <code>TRANSCRIBE_API_KEY</code> on the server to catch pieces named in voiceovers.</p>{% endif %}
+  <h3>Caption</h3>
+  <p class="transcript">{{ info.get('caption') or '(none)' }}</p>
+</section>
+{% elif post.note %}
+<section class="card"><h2>Your note</h2><p class="transcript">{{ post.note }}</p></section>
+{% endif %}
+{% endblock %}

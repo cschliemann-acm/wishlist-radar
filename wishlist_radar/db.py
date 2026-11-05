@@ -101,6 +101,8 @@ CREATE TABLE IF NOT EXISTS stores (
 # Columns added after the first release (added to existing databases on startup)
 MIGRATIONS = [
     "ALTER TABLE listings ADD COLUMN merchant TEXT DEFAULT ''",
+    "ALTER TABLE items ADD COLUMN post_id INTEGER",
+    "ALTER TABLE posts ADD COLUMN note TEXT DEFAULT ''",
 ]
 
 DEFAULT_SETTINGS: dict[str, Any] = {

@@ -351,7 +351,7 @@ async def add(request: Request, url: str = Form(""), text: str = Form(""), note:
         flash(request, f"Something went wrong: {e}", "error")
         return back("/add")
     flash(request, result["message"], "ok" if result["item_ids"] else "error")
-    return back("/" if result["item_ids"] else "/add")
+    return back(f"/imports/{result['post_id']}")
 
 
 async def _import_uploads(engine: Engine, files: list[UploadFile], note: str) -> dict:
@@ -378,6 +378,40 @@ def activity(request: Request):
     return render(request, "activity.html", deals=deals, checks=db.checks(limit=100),
                   posts=db.all("SELECT * FROM posts ORDER BY created_at DESC LIMIT 20"),
                   totals=totals)
+
+
+@app.get("/imports/{post_id}", response_class=HTMLResponse)
+def import_page(request: Request, post_id: int):
+    engine = get_engine()
+    post = engine.db.one("SELECT * FROM posts WHERE id = ?", post_id)
+    if not post:
+        raise HTTPException(404)
+    return render(request, "import.html", post=post, info=engine.load_info(post_id),
+                  frames=[p.name for p in engine.import_frames(post_id)],
+                  items=engine.db.all("SELECT * FROM items WHERE post_id = ? ORDER BY id", post_id),
+                  transcribe_on=engine.c.transcribe != "off")
+
+
+@app.post("/imports/{post_id}/rescan")
+def import_rescan(request: Request, post_id: int, note: str = Form("")):
+    try:
+        result = get_engine().rescan(post_id, note.strip())
+    except KeyError:
+        raise HTTPException(404)
+    except Exception as e:
+        logging.exception("rescan failed")
+        flash(request, f"Something went wrong: {e}", "error")
+        return back(f"/imports/{post_id}")
+    flash(request, result["message"], "ok" if result["item_ids"] else "error")
+    return back(f"/imports/{post_id}")
+
+
+@app.get("/imports/{post_id}/files/{name}")
+def import_file(post_id: int, name: str):
+    path = get_engine().import_dir(post_id) / Path(name).name
+    if not path.exists():
+        raise HTTPException(404)
+    return FileResponse(path)
 
 
 @app.get("/settings", response_class=HTMLResponse)

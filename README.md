@@ -52,6 +52,15 @@ APP_PASSWORD=demo INGEST_TOKEN=demo DATA_DIR=./demo-data SCHEDULER=off uvicorn w
 Then in the app's **Settings** page: your sizes, eBay country, and an ntfy topic for notifications
 (install the free **ntfy** app on your phone and subscribe to the same topic name).
 
+## Imports
+
+Every import gets a review page (linked from the Inbox and Activity) showing what was found,
+**the frames Claude looked at**, and the transcript and caption. If it missed something, type what
+(e.g. "the shoes and the cap") into **Find what it missed** and it looks again, without
+repeating items it already found. Reels are sampled at every scene change plus every 2 seconds
+(up to 24 frames). With `TRANSCRIBE=groq` (free key from console.groq.com) pieces named in the
+voiceover are caught too.
+
 ## Your sizes
 
 The **Sizes** page holds your sizes for tops, outerwear, trousers (waist + inseam) and shoes,

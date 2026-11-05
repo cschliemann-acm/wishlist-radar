@@ -31,7 +31,7 @@
         {% if d.confidence is not none %}
           <span class="badge {{ 'badge-muted' if d.confidence >= 0.6 else 'badge-warn' }}">{{ (d.confidence * 100)|round|int }}% sure</span>
         {% endif %}
-        {{ d.reason }}{% if d.source_url %} · <a href="{{ d.source_url }}" target="_blank" rel="noopener">post</a>{% endif %}
+        {{ d.reason }}{% if d.source_url %} · <a href="{{ d.source_url }}" target="_blank" rel="noopener">post</a>{% endif %}{% if d.post_id %} · <a href="/imports/{{ d.post_id }}">what was scanned</a>{% endif %}
       </p>
       <div class="draft-fields">
         <label class="grow">Search for

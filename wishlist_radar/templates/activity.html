@@ -36,7 +36,7 @@
       <tr class="{{ 'row-error' if p.error }}">
         <td>{{ m.when(p.created_at) }}</td>
         <td>{% if p.url %}<a href="{{ p.url }}" target="_blank" rel="noopener">{{ p.kind }} ↗</a>{% else %}{{ p.kind }}{% endif %}</td>
-        <td>{{ p.summary }}</td>
+        <td><a href="/imports/{{ p.id }}">{{ p.summary or 'View' }}</a></td>
         <td class="num">{{ p.item_count }}</td>
         <td class="err">{{ p.error }}</td>
       </tr>

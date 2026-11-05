@@ -61,12 +61,20 @@ IDENTIFY_SCHEMA = {
 }
 
 IDENTIFY_SYSTEM = """You help someone build a wishlist from social media posts. Identify the \
-products in the post they'd want to buy (clothing, shoes, bags, accessories, other objects), so \
-they can be hunted down on resale marketplaces like eBay and Grailed.
+products in the post they might want to buy (clothing, shoes, bags, accessories, other objects), \
+so they can be hunted down in shops and on resale marketplaces like eBay and Grailed.
 
-You get some of: the caption, still frames (numbered from 0), and a note from the user.
+You get some of: the caption, a transcript of what's said, still frames (numbered from 0), and \
+a note from the user.
 
-For each distinct product being shown, worn as the focus, or recommended:
+Be thorough. Outfit and "fit check" posts usually show several pieces: list EVERY distinct piece \
+worn or shown: outerwear, shirts, knitwear, t-shirts, trousers, shoes, socks, bags, hats, \
+eyewear, belts, watches, jewellery. Look across all frames: pieces are often only visible in a \
+few, and close-ups, labels and on-screen text overlays ("jacket: Kapital") give them away. The \
+transcript often names brands and pieces; trust it for names, but match each to what you see. \
+Include pieces whose brand you can't identify, described precisely, with low confidence.
+
+For each distinct product:
 - name: the specific product name/model if identifiable (e.g. "Box Shirt", "Air Max 1 '86 OG \
 Big Bubble"), otherwise a short precise description ("Boxy suede work jacket").
 - brand: as it's usually written on resale sites; "" if unknown. Use tags, captions and visible \
@@ -79,10 +87,13 @@ logos; don't guess a brand from style alone.
 - confidence (0-1): how sure you are about brand+model. Unbranded/guessed items under 0.5.
 - reason: where you saw it.
 
-If the user's note says which item they care about, return only that. If there's no post and the \
-note is a list of products (one per line, or comma-separated), return every one of them as its \
-own item, in the same order, keeping any colourway, year or version they specified. Skip \
-incidental background objects. Return an empty list if nothing is identifiable.
+If the user's note names specific items, focus on those (and return only those if the note says \
+"only"). If there's no post and the note is a list of products (one per line, or \
+comma-separated), return every one of them as its own item, in the same order, keeping any \
+colourway, year or version they specified. Skip things that aren't part of the outfit or product \
+focus, like furniture or other people in the background, unless the note asks for them. If a \
+list of already-found items is given, don't return those again. Return an empty list if \
+nothing (new) is identifiable.
 summary: one short sentence about the post."""
 
 
@@ -101,7 +112,8 @@ def _first_text(response) -> str:
 
 
 def identify(client: anthropic.Anthropic, model: str, *, caption: str = "", note: str = "",
-             uploader: str = "", images: list[Path] | None = None) -> Identification:
+             uploader: str = "", images: list[Path] | None = None, transcript: str = "",
+             already_found: list[str] | None = None) -> Identification:
     content: list[dict] = []
     for i, p in enumerate(images or []):
         content.append({"type": "text", "text": f"Frame {i}:"})
@@ -110,6 +122,10 @@ def identify(client: anthropic.Anthropic, model: str, *, caption: str = "", note
     if uploader:
         parts.append(f"<uploader>{uploader}</uploader>")
     parts.append(f"<caption>\n{caption or '(none)'}\n</caption>")
+    if transcript:
+        parts.append(f"<transcript>\n{transcript}\n</transcript>")
+    if already_found:
+        parts.append("<already_found>\n" + "\n".join(already_found) + "\n</already_found>")
     if note:
         parts.append(f"<user_note>\n{note}\n</user_note>")
     content.append({"type": "text", "text": "\n\n".join(parts)})

@@ -41,6 +41,10 @@ class Config:
     identify_model: str = field(default_factory=lambda: os.getenv("IDENTIFY_MODEL", "claude-opus-5-5"))
     match_model: str = field(default_factory=lambda: os.getenv("MATCH_MODEL", "claude-haiku-5-5"))
 
+    # Speech-to-text for reels: "off", "groq" or "openai" (+ TRANSCRIBE_API_KEY)
+    transcribe: str = field(default_factory=lambda: os.getenv("TRANSCRIBE", "off").strip().lower())
+    transcribe_api_key: str = field(default_factory=lambda: os.getenv("TRANSCRIBE_API_KEY", "").strip())
+
     instagram_cookies_file: str = field(default_factory=lambda: os.getenv("INSTAGRAM_COOKIES_FILE", ""))
     data_dir: Path = field(default_factory=lambda: Path(os.getenv("DATA_DIR", "./data")))
     # Turn off the background checker (e.g. while developing)
@@ -53,6 +57,10 @@ class Config:
         return self.data_dir / "images"
 
     @property
+    def imports_dir(self) -> Path:
+        return self.data_dir / "imports"
+
+    @property
     def db_path(self) -> Path:
         return self.data_dir / "wishlist.db"
 
@@ -61,6 +69,7 @@ def load_config() -> Config:
     c = Config()
     c.data_dir.mkdir(parents=True, exist_ok=True)
     c.images_dir.mkdir(parents=True, exist_ok=True)
+    c.imports_dir.mkdir(parents=True, exist_ok=True)
     if not c.secret_key:
         c = replace(c, secret_key=hashlib.sha256(f"wishlist-radar:{c.app_password}".encode()).hexdigest())
     cookies_b64 = os.getenv("INSTAGRAM_COOKIES_B64", "").strip()

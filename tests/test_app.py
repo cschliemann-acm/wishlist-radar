@@ -378,3 +378,43 @@ def test_add_suggested_shops(client, monkeypatch):
     urls = {s["url"] for s in eng.db.stores()}
     assert urls == {"https://shopcanoeclub.com", "https://store.unionlosangeles.com"}
     assert "shopcanoeclub.com" not in c.get("/shops").text.split("Suggested shops")[-1].split("Your shops")[0]
+
+
+def test_rescan_reuses_frames_and_skips_already_found(tmp_path, monkeypatch):
+    eng = make_engine(tmp_path, {})
+    frame = tmp_path / "f0.jpg"
+    frame.write_bytes(b"jpg")
+    calls = []
+
+    def identify(client, model, **kw):
+        calls.append(kw)
+        if len(calls) == 1:
+            return ai.Identification(summary="fit pic", items=[ai.FoundItem(
+                name="Box Shirt", brand="Our Legacy", category="tops", color="black", description="",
+                search_query="our legacy box shirt", frame_index=0, confidence=0.9, reason="")])
+        return ai.Identification(summary="", items=[ai.FoundItem(
+            name="Michael", brand="Paraboot", category="shoes", color="brown", description="",
+            search_query="paraboot michael", frame_index=0, confidence=0.8, reason="frame 0")])
+
+    monkeypatch.setattr(ai, "identify", identify)
+    first = eng.import_images([frame], note="")
+    post_id = first["post_id"]
+    assert [p.name for p in eng.import_frames(post_id)] == ["upload_00.jpg"]
+
+    second = eng.rescan(post_id, "the shoes")
+    assert calls[1]["already_found"] == ["Our Legacy Box Shirt"]
+    assert calls[1]["note"] == "the shoes" and len(calls[1]["images"]) == 1
+    assert second["post_id"] == post_id
+    post = eng.db.one("SELECT * FROM posts WHERE id = ?", post_id)
+    assert post["item_count"] == 2 and post["summary"] == "fit pic"
+    assert {i["post_id"] for i in eng.db.all("SELECT post_id FROM items")} == {post_id}
+
+
+def test_import_page_renders(client, monkeypatch):
+    c, eng = client
+    c.post("/login", data={"password": "pw"})
+    monkeypatch.setattr(ai, "identify", lambda *a, **k: ai.Identification(summary="A fit", items=[]))
+    r = c.post("/add", data={"text": "Paraboot Michael"}, follow_redirects=False)
+    assert r.headers["location"].startswith("/imports/")
+    page = c.get(r.headers["location"])
+    assert page.status_code == 200 and "Paraboot Michael" in page.text

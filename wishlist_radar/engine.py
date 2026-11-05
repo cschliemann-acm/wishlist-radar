@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import shutil
 import tempfile
@@ -23,6 +24,8 @@ log = logging.getLogger("wishlist_radar")
 
 JUDGE_BATCH = 25
 TICK_SECONDS = 30
+FRAME_INTERVAL = 2.0   # seconds between regular frames (plus one per scene change)
+MAX_FRAMES = 24
 INTERVAL_CHOICES = [15, 30, 60, 180, 360, 720, 1440]
 SIZE_SETTING_BY_CATEGORY = {"tops": "size_tops", "outerwear": "size_outerwear",
                             "bottoms": "size_bottoms", "shoes": "size_shoes"}
@@ -128,33 +131,100 @@ class Engine:
         threading.Thread(target=run, daemon=True, name="detect-stores").start()
 
     # ------------------------------------------------------------------ importing
+    def import_dir(self, post_id: int) -> Path:
+        return self.c.imports_dir / str(post_id)
+
+    def _new_post(self, url: str, kind: str, note: str) -> int:
+        post_id = self.db.run("INSERT INTO posts (url, kind, note, created_at) VALUES (?,?,?,?)",
+                              url, kind, note, time.time())
+        self.import_dir(post_id).mkdir(parents=True, exist_ok=True)
+        return post_id
+
+    def _save_info(self, post_id: int, **info) -> None:
+        (self.import_dir(post_id) / "info.json").write_text(json.dumps(info, indent=2))
+
+    def load_info(self, post_id: int) -> dict:
+        path = self.import_dir(post_id) / "info.json"
+        return json.loads(path.read_text()) if path.exists() else {}
+
+    def import_frames(self, post_id: int) -> list[Path]:
+        d = self.import_dir(post_id)
+        return sorted(p for p in d.glob("*") if p.suffix.lower() in (".jpg", ".jpeg", ".png")) \
+            if d.exists() else []
+
     def import_instagram(self, url: str, note: str = "") -> dict:
+        post_id = self._new_post(url, "instagram", note)
+        out_dir = self.import_dir(post_id)
         with tempfile.TemporaryDirectory(dir=self.c.data_dir) as tmp:
             tmpdir = Path(tmp)
             try:
                 post = instagram.download_post(url, tmpdir, self.c.instagram_cookies_file)
             except instagram.DownloadError as e:
-                self.db.run("INSERT INTO posts (url, kind, error, created_at) VALUES (?,?,?,?)",
-                            url, "instagram", str(e), time.time())
+                self.db.run("UPDATE posts SET error = ? WHERE id = ?", str(e), post_id)
                 raise
             frames: list[Path] = []
+            transcript, warnings = "", []
             if post.video_path:
                 if not post.duration:
                     post.duration = media.probe_duration(post.video_path)
-                frames = media.extract_smart_frames(post.video_path, tmpdir, post.duration, 2.5, 20)
-            found = ai.identify(self.client, self.c.identify_model, caption=post.caption,
-                                note=note, uploader=post.uploader, images=frames)
-            return self._save_found(found, frames, url, "instagram")
+                frames = media.extract_smart_frames(post.video_path, out_dir, post.duration,
+                                                    FRAME_INTERVAL, MAX_FRAMES)
+                transcript, warning = self._transcribe(post.video_path, tmpdir)
+                if warning:
+                    warnings.append(warning)
+            self._save_info(post_id, caption=post.caption, uploader=post.uploader,
+                            transcript=transcript, duration=post.duration, warnings=warnings)
+        found = ai.identify(self.client, self.c.identify_model, caption=post.caption, note=note,
+                            uploader=post.uploader, images=frames, transcript=transcript)
+        return self._save_found(found, frames, url, post_id)
+
+    def _transcribe(self, video: Path, tmpdir: Path) -> tuple[str, str]:
+        """(transcript, warning). Best-effort: a failure shouldn't stop the import."""
+        if self.c.transcribe == "off":
+            return "", ""
+        try:
+            if not media.has_audio(video):
+                return "", ""
+            from .transcribe import transcribe
+            audio = media.extract_audio(video, tmpdir / "speech.mp3", 0, 300)
+            return transcribe(audio, self.c.transcribe, self.c.transcribe_api_key), ""
+        except Exception as e:
+            log.warning("transcription failed: %s", e)
+            return "", f"Speech-to-text failed: {e}"[:300]
 
     def import_images(self, images: list[Path], note: str = "") -> dict:
-        found = ai.identify(self.client, self.c.identify_model, note=note, images=images)
-        return self._save_found(found, images, "", "screenshot")
+        post_id = self._new_post("", "screenshot", note)
+        kept = []
+        for i, p in enumerate(images):
+            dest = self.import_dir(post_id) / f"upload_{i:02d}{p.suffix or '.jpg'}"
+            shutil.copy(p, dest)
+            kept.append(dest)
+        self._save_info(post_id, caption="", uploader="", transcript="", warnings=[])
+        found = ai.identify(self.client, self.c.identify_model, note=note, images=kept)
+        return self._save_found(found, kept, "", post_id)
 
     def import_text(self, text: str) -> dict:
+        post_id = self._new_post("", "text", text)
+        self._save_info(post_id, caption="", uploader="", transcript="", warnings=[])
         found = ai.identify(self.client, self.c.identify_model, note=text)
-        return self._save_found(found, [], "", "text")
+        return self._save_found(found, [], "", post_id)
 
-    def _save_found(self, found: ai.Identification, images: list[Path], url: str, kind: str) -> dict:
+    def rescan(self, post_id: int, note: str) -> dict:
+        """Look at a post again for things the first pass missed (no re-download)."""
+        post = self.db.one("SELECT * FROM posts WHERE id = ?", post_id)
+        if not post:
+            raise KeyError(post_id)
+        info = self.load_info(post_id)
+        frames = self.import_frames(post_id)
+        already = [f"{i['brand']} {i['name']}".strip()
+                   for i in self.db.all("SELECT brand, name FROM items WHERE post_id = ?", post_id)]
+        found = ai.identify(self.client, self.c.identify_model, caption=info.get("caption", ""),
+                            uploader=info.get("uploader", ""), transcript=info.get("transcript", ""),
+                            images=frames, note=note or post.get("note", ""), already_found=already)
+        return self._save_found(found, frames, post["url"], post_id)
+
+    def _save_found(self, found: ai.Identification, images: list[Path], url: str,
+                    post_id: int) -> dict:
         settings = self.db.settings()
         ids = []
         for f in found.items:
@@ -163,19 +233,20 @@ class Engine:
                 description=f.description, search_query=f.search_query,
                 sources=settings["default_sources"],
                 interval_minutes=int(settings["default_interval_minutes"]),
-                source_url=url, confidence=f.confidence, reason=f.reason,
+                source_url=url, confidence=f.confidence, reason=f.reason, post_id=post_id,
             )
             if 0 <= f.frame_index < len(images):
                 dest = self.c.images_dir / f"item_{item_id}{images[f.frame_index].suffix or '.jpg'}"
                 shutil.copy(images[f.frame_index], dest)
                 self.db.update_item(item_id, image_path=dest.name)
             ids.append(item_id)
-        self.db.run("INSERT INTO posts (url, kind, summary, item_count, created_at) VALUES (?,?,?,?,?)",
-                    url, kind, found.summary, len(ids), time.time())
+        self.db.run("UPDATE posts SET summary = CASE WHEN summary = '' THEN ? ELSE summary END, "
+                    "item_count = item_count + ? WHERE id = ?", found.summary, len(ids), post_id)
         names = [f"{f.brand} {f.name}".strip() for f in found.items]
         message = (f"Added to inbox: {'; '.join(names)}" if names
-                   else "Couldn't spot any products in that post")
-        return {"summary": found.summary, "item_ids": ids, "items": names, "message": message}
+                   else "Couldn't spot any (new) products in that post")
+        return {"summary": found.summary, "item_ids": ids, "items": names, "message": message,
+                "post_id": post_id}
 
     # ------------------------------------------------------------------ checking
     def check_item(self, item_id: int, trigger: str = "schedule") -> None:

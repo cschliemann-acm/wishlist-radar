@@ -104,9 +104,20 @@ db.create_item(status="draft", name="Suede Work Jacket", brand="Margaret Howell"
                interval_minutes=60, confidence=0.72, reason="Worn in frames 3–6, brand tagged in caption",
                source_url="https://www.instagram.com/reel/EXAMPLE/",
                image_path=img("draft").removeprefix("/images/"))
-db.run("INSERT INTO posts (url, kind, summary, item_count, created_at) VALUES (?,?,?,?,?)",
-       "https://www.instagram.com/reel/EXAMPLE/", "instagram",
-       "Autumn outfit with a suede chore jacket and pleated trousers", 1, now - 3600)
+post_id = db.run("INSERT INTO posts (url, kind, summary, item_count, created_at) VALUES (?,?,?,?,?)",
+                 "https://www.instagram.com/reel/EXAMPLE/", "instagram",
+                 "Autumn outfit with a suede chore jacket and pleated trousers", 1, now - 3600)
+import json, shutil  # noqa: E401
+imp = data_dir / "imports" / str(post_id)
+imp.mkdir(parents=True, exist_ok=True)
+for k in range(10):
+    shutil.copy(data_dir / img(f"frame{k}", 360, 640).removeprefix("/"), imp / f"frame_{k:02d}.jpg")
+(imp / "info.json").write_text(json.dumps({
+    "caption": "Autumn uniform. Jacket @margarethowell, trousers @auralee_official, shoes @paraboot",
+    "uploader": "someone", "duration": 21.4, "warnings": [],
+    "transcript": "So the jacket is Margaret Howell, the suede work jacket from last year. Trousers are "
+                  "Auralee, the wool gabardine pleated ones, and shoes are Paraboot Michaels in marron."}))
+db.run("UPDATE items SET post_id = ? WHERE status = 'draft'", post_id)
 for name, url, kind, status in [
     ("No Man Walks Alone", "https://www.nomanwalksalone.com", "shopify", "Shopify store · prices in USD"),
     ("Haven", "https://havenshop.com", "shopify", "Shopify store · prices in USD"),
