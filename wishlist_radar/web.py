@@ -22,7 +22,7 @@ from pydantic import BaseModel
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.middleware.sessions import SessionMiddleware
 
-from . import fx, sales as sales_mod
+from . import fx, prices, sales as sales_mod
 from .config import load_config
 from .db import DB, ITEM_FIELDS
 from .engine import INTERVAL_CHOICES, Engine
@@ -33,6 +33,7 @@ from .sources.shops import SUGGESTED_SHOPS, host_key
 logging.basicConfig(level=logging.INFO)
 HERE = Path(__file__).parent
 INSTAGRAM_URL = re.compile(r"https?://(?:www\.)?instagram\.com/[^\s]+")
+ANY_URL = re.compile(r"https?://[^\s]+")
 PUBLIC_PATHS = ("/login", "/health", "/static/", "/api/")
 
 
@@ -118,7 +119,16 @@ def render(request: Request, name: str, **ctx) -> HTMLResponse:
     ctx.setdefault("currency", engine.currency())
     ctx.setdefault("source_labels", {k: s.label for k, s in engine.sources().items()})
     ctx.setdefault("inbox_count", len(engine.db.items(("draft",))))
+    ctx.setdefault("problem_count", len(engine.health.problems()))
+    base = str(request.base_url).rstrip("/")
+    if base.startswith("https://") and engine.db.settings().get("app_url") != base:
+        engine.db.save_settings({"app_url": base})  # for links in notifications
     return templates.TemplateResponse(request, name, ctx)
+
+
+def clean_link(url: str) -> str:
+    """Instagram links lose their tracking query; other links keep it (some shops need it)."""
+    return url.split("?")[0] if INSTAGRAM_URL.match(url) else url
 
 
 def flash(request: Request, message: str, kind: str = "ok") -> None:
@@ -193,8 +203,19 @@ def item_page(request: Request, item_id: int):
     if not item:
         raise HTTPException(404)
     settings = engine.db.settings()
-    deals = [l for l in engine.db.item_listings(item_id, ("match",)) if l["is_deal"]]
-    matches = [l for l in engine.db.item_listings(item_id, ("match",)) if not l["is_deal"]]
+    all_matches = engine.db.item_listings(item_id, ("match",))
+    currency = engine.currency()
+    price_stats = prices.stats([l for l in all_matches if l["feedback"] != "down"], currency)
+    for l in all_matches + engine.db.item_listings(item_id, ("maybe",), limit=50):
+        l["below_pct"] = prices.below_typical(prices.to_currency(l["price"], l["currency"], currency),
+                                              price_stats["median"], price_stats["n"])
+    live = [l for l in all_matches if l["availability"] != "sold"]
+    deals = [l for l in live if l["is_deal"]]
+    matches = [l for l in live if not l["is_deal"]]
+    sold = [l for l in all_matches if l["availability"] == "sold"]
+    events = engine.db.all("SELECT e.*, l.title, l.url, l.currency FROM events e LEFT JOIN listings l "
+                           "ON l.id = e.listing_id WHERE e.item_id = ? ORDER BY e.created_at DESC LIMIT 30",
+                           item_id)
     stats = engine.db.one(
         "SELECT COUNT(*) AS seen, SUM(verdict='match') AS matched, "
         "MIN(CASE WHEN verdict='match' THEN price END) AS low, "
@@ -203,7 +224,8 @@ def item_page(request: Request, item_id: int):
     return render(
         request, "item.html", item=item, settings=settings,
         wanted_size=engine.wanted_size(item, settings),
-        deals=deals, matches=matches,
+        deals=deals, matches=matches, sold=sold, events=events, price_stats=price_stats,
+        suggested_budget=None if item["max_price"] else prices.suggested_budget(price_stats["median"], price_stats["n"]),
         maybes=engine.db.item_listings(item_id, ("maybe",), limit=50),
         rejected_count=engine.db.one("SELECT COUNT(*) n FROM listings WHERE item_id = ? AND "
                                      "verdict = 'no'", item_id)["n"],
@@ -242,6 +264,8 @@ async def update_item(request: Request, item_id: int):
     if not fields.get("search_query", item["search_query"]):
         fields["search_query"] = item["search_query"]
     query_changed = fields.get("search_query", item["search_query"]) != item["search_query"]
+    if query_changed:
+        fields["search_query_jp"] = ""  # re-translated for Yahoo! Japan on the next check
     activating = fields.get("status") == "active" and item["status"] != "active"
     if query_changed or activating or "interval_minutes" in fields:
         fields["next_check_at"] = time.time()  # check soon with the new settings
@@ -296,18 +320,47 @@ def dismiss_listing(request: Request, listing_id: int):
     return back(f"/items/{l['item_id']}")
 
 
+@app.post("/listings/{listing_id}/feedback")
+def listing_feedback(request: Request, listing_id: int, value: str = Form(...), next: str = Form("")):
+    """👍 = this is the item (teaches the matcher); 👎 = wrong item (hidden, and teaches it)."""
+    engine = get_engine()
+    l = engine.db.one("SELECT * FROM listings WHERE id = ?", listing_id)
+    if not l or value not in ("up", "down"):
+        raise HTTPException(404)
+    item = engine.db.item(l["item_id"])
+    if value == "up":
+        l.update(verdict="match", score=1.0, feedback="up",
+                 reason=l["reason"] if l["verdict"] == "match" else "You marked this as the item")
+        if l["size_ok"] == "no" and l["source"] != "stores":
+            l["size_ok"] = "unknown"
+    else:
+        l.update(feedback="down", dismissed=1)
+    l["is_deal"] = int(engine.evaluate(item, l))
+    engine.db.run("UPDATE listings SET verdict=?, score=?, feedback=?, reason=?, size_ok=?, dismissed=?, "
+                  "is_deal=? WHERE id=?", l["verdict"], l["score"], l["feedback"], l["reason"],
+                  l["size_ok"], l["dismissed"], l["is_deal"], listing_id)
+    flash(request, "Thanks. Future listings are judged with this in mind." if value == "down"
+          else "Marked as the item. Similar listings will rank higher.")
+    return back(next or f"/items/{l['item_id']}")
+
+
 @app.post("/listings/{listing_id}/promote")
 def promote_listing(request: Request, listing_id: int):
-    """User says a 'maybe' or 'no' listing is actually the item."""
-    db = get_engine().db
-    l = db.one("SELECT l.*, i.max_price FROM listings l JOIN items i ON i.id = l.item_id "
-               "WHERE l.id = ?", listing_id)
-    if not l:
+    """Older forms: same as 👍."""
+    return listing_feedback(request, listing_id, value="up")
+
+
+@app.post("/items/{item_id}/budget")
+def set_budget(request: Request, item_id: int, value: str = Form(...)):
+    engine = get_engine()
+    if not engine.db.item(item_id):
         raise HTTPException(404)
-    in_budget = l["max_price"] is None or (l["price"] is not None and l["price"] <= l["max_price"])
-    db.run("UPDATE listings SET verdict='match', score=1, reason='Marked as a match by you', "
-           "is_deal=? WHERE id = ?", int(in_budget), listing_id)
-    return back(f"/items/{l['item_id']}")
+    engine.db.update_item(item_id, max_price=_float(value))
+    item = engine.db.item(item_id)
+    for l in engine.db.all("SELECT * FROM listings WHERE item_id = ? AND verdict = 'match'", item_id):
+        engine.db.run("UPDATE listings SET is_deal = ? WHERE id = ?", int(engine.evaluate(item, l)), l["id"])
+    flash(request, f"Budget set to {money(_float(value), engine.currency())}")
+    return back(f"/items/{item_id}")
 
 
 @app.get("/api/items/{item_id}/status")
@@ -331,11 +384,11 @@ async def add(request: Request, url: str = Form(""), text: str = Form(""), note:
     files = [f for f in files if f.filename]
     try:
         if url.strip():
-            m = INSTAGRAM_URL.search(url)
+            m = ANY_URL.search(url.strip())
             if not m:
-                flash(request, "That doesn't look like an Instagram link", "error")
+                flash(request, "That doesn't look like a link", "error")
                 return back("/add")
-            result = engine.import_instagram(m.group(0).split("?")[0], note)
+            result = engine.import_link(clean_link(m.group(0)), note)
         elif files:
             result = await _import_uploads(engine, files, note)
         elif text.strip():
@@ -420,7 +473,41 @@ def settings_page(request: Request):
     base = str(request.base_url).rstrip("/")
     return render(request, "settings.html", settings=engine.db.settings(),
                   statuses=engine.source_statuses(), sources=engine.sources(),
-                  ingest_url=f"{base}/api/ingest")
+                  ingest_url=f"{base}/api/ingest", backups=engine.backups()[:7])
+
+
+@app.post("/settings/backup")
+def make_backup(request: Request):
+    path = get_engine().backup()
+    return FileResponse(path, filename=path.name, media_type="application/octet-stream")
+
+
+@app.get("/settings/backups/{name}")
+def download_backup(name: str):
+    path = get_engine().c.data_dir / "backups" / Path(name).name
+    if not path.exists() or not path.name.startswith("wishlist-"):
+        raise HTTPException(404)
+    return FileResponse(path, filename=path.name, media_type="application/octet-stream")
+
+
+# ---------------------------------------------------------------------- status
+@app.get("/status", response_class=HTMLResponse)
+def status_page(request: Request):
+    engine = get_engine()
+    stores = engine.db.stores()
+    return render(request, "status.html", rows=engine.health.rows(), statuses=engine.source_statuses(),
+                  sources=engine.sources(), settings=engine.db.settings(),
+                  stores_bad=[s for s in stores if s["status"].startswith(("Last search failed", "Couldn"))],
+                  last_backup=engine.db.settings().get("last_backup_at"),
+                  recheck_due=engine.db.one("SELECT COUNT(*) n FROM listings WHERE verdict='match' AND "
+                                            "dismissed=0 AND availability!='sold'")["n"])
+
+
+@app.post("/status/test")
+def status_test(request: Request):
+    get_engine().self_test_async()
+    flash(request, "Testing everything now. Reload in a minute to see the results.")
+    return back("/status")
 
 
 @app.post("/settings")
@@ -434,6 +521,17 @@ async def save_settings(request: Request):
     values["default_sources"] = ",".join(s for s in form.getlist("default_source")
                                          if s in engine.sources()) or "ebay"
     values["min_match_score"] = min(1.0, max(0.0, _float(form.get("min_match_score")) or 0.7))
+    values["digest_enabled"] = form.get("digest_enabled") == "1"
+    values["digest_hour"] = min(23, max(0, int(form.get("digest_hour") or 9)))
+    tz = (form.get("timezone") or "").strip()
+    if tz:
+        try:
+            from zoneinfo import ZoneInfo
+            ZoneInfo(tz)
+            values["timezone"] = tz
+        except Exception:
+            flash(request, f"Unknown time zone “{tz}”. Use a name like America/New_York", "error")
+            return back("/settings")
     engine.db.save_settings(values)
     flash(request, "Settings saved")
     return back("/settings")
@@ -525,7 +623,9 @@ def sizes_page(request: Request):
     return render(request, "sizes.html", settings=get_engine().db.settings())
 
 
-SIZE_KEYS = ("size_tops", "size_outerwear", "size_bottoms", "size_inseam", "size_shoes",
+SIZE_KEYS = ("meas_unit", "meas_chest", "meas_length", "meas_shoulder", "meas_sleeve", "meas_waist",
+             "meas_inseam",
+             "size_tops", "size_outerwear", "size_bottoms", "size_inseam", "size_shoes",
              "size_brands", "size_notes")
 
 
@@ -646,12 +746,14 @@ class IngestRequest(BaseModel):
 @app.post("/api/ingest")
 def api_ingest(req: IngestRequest, authorization: str = Header(default="")):
     _check_token(authorization)
-    m = INSTAGRAM_URL.search(req.url)
+    m = ANY_URL.search(req.url)
     if not m:
-        raise HTTPException(400, "No instagram.com link found")
+        raise HTTPException(400, "No link found")
     try:
-        return get_engine().import_instagram(m.group(0).split("?")[0], req.note)
+        return get_engine().import_link(clean_link(m.group(0)), req.note)
     except DownloadError as e:
+        return JSONResponse({"message": str(e), "item_ids": []}, status_code=422)
+    except RuntimeError as e:
         return JSONResponse({"message": str(e), "item_ids": []}, status_code=422)
 
 

@@ -19,7 +19,7 @@ from datetime import datetime
 
 import httpx
 
-from . import Listing, SourceStatus
+from . import Listing, ListingUpdate, SourceStatus
 
 HOME = "https://www.grailed.com/"
 DEFAULT_INDEXES = ["Listing_by_date_added_production", "Listing_production"]
@@ -157,3 +157,30 @@ class GrailedSource:
             last = f"Grailed search failed ({resp.status_code}): {resp.text[:200]}"
         self._last_error = last
         raise RuntimeError(last)
+
+    # ---- seen-before listings ------------------------------------------------
+    def _get_object(self, object_id: str) -> dict | None:
+        if not self.app_id:
+            self._discover()
+        resp = httpx.get(
+            f"https://{self.app_id.lower()}-dsn.algolia.net/1/indexes/{self.indexes[0]}/{object_id}",
+            headers={**HEADERS, "X-Algolia-Application-Id": self.app_id,
+                     "X-Algolia-API-Key": self.api_key},
+            timeout=30,
+        )
+        if resp.status_code == 404:
+            return None
+        if resp.status_code != 200:
+            raise RuntimeError(f"Grailed lookup failed ({resp.status_code})")
+        return resp.json()
+
+    def refresh(self, listing: dict) -> ListingUpdate | None:
+        hit = self._get_object(listing["listing_id"])
+        if hit is None or hit.get("sold") or hit.get("deleted"):
+            return ListingUpdate(available=False)
+        return ListingUpdate(price=float(hit["price"]) if hit.get("price") is not None else None)
+
+    def details(self, listing: dict) -> str:
+        hit = self._get_object(listing["listing_id"]) or {}
+        parts = [str(hit.get(k) or "") for k in ("description", "measurements")]
+        return "\n".join(p for p in parts if p)[:6000]

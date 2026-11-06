@@ -37,7 +37,8 @@
   <dl class="plan-grid">
     <div><dt>Searching for</dt><dd class="query">“{{ item.search_query }}”</dd></div>
     <div><dt>Size</dt><dd>{{ wanted_size or 'Any' }}{% if not item.size and wanted_size %} <span class="muted small">(your default)</span>{% endif %}</dd></div>
-    <div><dt>Budget</dt><dd>{{ ('up to ' ~ item.max_price|money(currency)) if item.max_price else 'No limit · tracking prices' }}</dd></div>
+    <div><dt>Budget</dt><dd>{{ ('up to ' ~ item.max_price|money(currency)) if item.max_price else 'No limit · tracking prices' }}
+      {% if suggested_budget %}<form method="post" action="/items/{{ item.id }}/budget" class="inline-form"><input type="hidden" name="value" value="{{ suggested_budget }}"><button class="btn btn-sm">Set {{ suggested_budget|money(currency) }}</button></form>{% endif %}</dd></div>
     <div><dt>How often</dt><dd>{{ item.interval_minutes|interval|capitalize }}</dd></div>
     <div><dt>Last search</dt><dd>{{ m.when(item.last_checked_at) }}</dd></div>
     <div><dt>Next search</dt><dd>
@@ -70,10 +71,11 @@
 
   <div class="stat-row">
     <div><span class="stat-num">{{ stats.seen or 0 }}</span><span class="stat-label">listings seen</span></div>
-    <div><span class="stat-num">{{ stats.matched or 0 }}</span><span class="stat-label">matches</span></div>
-    <div><span class="stat-num">{{ stats.low|money(currency) if stats.low is not none else '—' }}</span><span class="stat-label">lowest match</span></div>
-    <div><span class="stat-num">{{ stats.avg|money(currency) if stats.avg is not none else '—' }}</span><span class="stat-label">average match</span></div>
+    <div><span class="stat-num">{{ price_stats.n }}</span><span class="stat-label">matches priced</span></div>
+    <div><span class="stat-num">{{ price_stats.median|money(currency) if price_stats.median is not none else '—' }}</span><span class="stat-label">typical price</span></div>
+    <div><span class="stat-num">{{ (price_stats.low|money(currency) ~ '–' ~ price_stats.high|money(currency)) if price_stats.low is not none else '—' }}</span><span class="stat-label">range</span></div>
   </div>
+  {% if suggested_budget %}<p class="muted small">Matches usually go for about {{ price_stats.median|money(currency) }}. A budget of {{ suggested_budget|money(currency) }} catches the good ones.</p>{% endif %}
 </section>
 
 <section>
@@ -92,11 +94,45 @@
 </section>
 {% endif %}
 
+{% if events %}
+<section>
+  <div class="section-head"><h2>Price &amp; stock changes</h2>
+    <p class="muted small">Matches are re-checked every few hours. Price drops and your size coming back in stock send a notification.</p></div>
+  <div class="table-wrap"><table class="checks">
+    <thead><tr><th>When</th><th>What</th><th>Listing</th></tr></thead>
+    <tbody>
+    {% for e in events %}
+      <tr>
+        <td>{{ m.when(e.created_at) }}</td>
+        <td class="{{ 'deal-num' if e.kind in ('price_drop', 'restock') }}">
+          {% if e.kind == 'price_drop' %}Price drop {{ e.old_value|float|money(e.currency) }} → {{ e.new_value|float|money(e.currency) }}
+          {% elif e.kind == 'price_up' %}Price up {{ e.old_value|float|money(e.currency) }} → {{ e.new_value|float|money(e.currency) }}
+          {% elif e.kind == 'restock' %}Back in your size
+          {% elif e.kind == 'size_gone' %}Your size sold out
+          {% elif e.kind == 'sold' %}Sold / ended{% else %}{{ e.kind }}{% endif %}
+        </td>
+        <td class="err-free">{% if e.url %}<a href="{{ e.url }}" target="_blank" rel="noopener">{{ (e.title or '')[:70] }}</a>{% endif %}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table></div>
+</section>
+{% endif %}
+
 {% if maybes %}
 <section>
   <details>
     <summary><h2 class="inline">Possible matches <span class="count">{{ maybes|length }}</span></h2> <span class="muted small">Claude wasn't sure</span></summary>
     {% for l in maybes %}{{ m.listing_card(l, item) }}{% endfor %}
+  </details>
+</section>
+{% endif %}
+
+{% if sold %}
+<section>
+  <details>
+    <summary><h2 class="inline">Sold <span class="count">{{ sold|length }}</span></h2> <span class="muted small">matches that sold or ended: useful for what things go for</span></summary>
+    {% for l in sold %}{{ m.listing_card(l, item) }}{% endfor %}
   </details>
 </section>
 {% endif %}

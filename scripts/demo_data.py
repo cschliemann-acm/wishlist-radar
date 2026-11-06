@@ -161,4 +161,19 @@ for name, url, region, status in [
 ]:
     db.run("INSERT INTO sale_sources (name, url, region, status, last_fetched_at) VALUES (?,?,?,?,?)",
            name, url, region, status, now - 2400)
+# Price/stock tracking, feedback, fit, health
+l_ids = {r["listing_id"]: r["id"] for r in db.all("SELECT id, listing_id FROM listings")}
+db.run("UPDATE listings SET prev_price = 210, price = 165, is_deal = 1 WHERE listing_id = '1-1'")
+db.run("UPDATE listings SET fit = 'good', fit_note = 'p2p 22in vs your 22in' WHERE listing_id = '1-0'")
+db.run("UPDATE listings SET availability = 'sold', is_deal = 0 WHERE listing_id = '1-2'")
+for kind, old, new, lid, ago in [("price_drop", "210", "165", "1-1", 1800), ("sold", "", "", "1-2", 7200),
+                                 ("restock", "In stock: 46, 50", "In stock: 46, 48, 50", "nmwa:box-shirt", 20000)]:
+    db.run("INSERT INTO events (item_id, listing_id, kind, old_value, new_value, created_at) VALUES (1,?,?,?,?,?)",
+           l_ids[lid], kind, old, new, now - ago)
+db.save_settings({"meas_chest": "22", "meas_length": "28", "meas_waist": "16", "meas_inseam": "31"})
+for name, ok, err, fails in [("Claude", True, "", 0), ("eBay", False, "No eBay keys yet: add EBAY_CLIENT_ID and EBAY_CLIENT_SECRET", 3),
+                             ("Shops", True, "", 0), ("Grailed", True, "", 0), ("Notifications", True, "", 0),
+                             ("Exchange rates", True, "", 0), ("Sales: Arlettie (US)", False, "page has almost no text", 2)]:
+    db.run("INSERT INTO health (name, last_ok_at, last_error, last_error_at, failures) VALUES (?,?,?,?,?)",
+           name, now - 600 if ok else None, err, now - 900 if err else None, fails)
 print(f"Demo data written to {db_path}")

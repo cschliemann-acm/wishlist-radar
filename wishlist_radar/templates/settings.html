@@ -39,6 +39,13 @@
       <label>ntfy topic <input name="ntfy_topic" value="{{ settings.ntfy_topic }}" placeholder="e.g. caspar-deals-8f3k2" autocomplete="off"></label>
       <div class="align-end"><button class="btn" formaction="/settings/test-notification">Send a test</button></div>
     </div>
+    <p class="muted small">Deals, price drops, your size coming back in stock, and sample sales for your brands arrive straight away. Everything else (possible matches, other changes, new sales) goes in one daily summary.</p>
+    <div class="form-grid three">
+      <label class="check"><input type="checkbox" name="digest_enabled" value="1" {{ 'checked' if settings.digest_enabled }}> Daily summary</label>
+      <label>Sent at
+        <select name="digest_hour">{% for h in range(24) %}<option value="{{ h }}" {{ 'selected' if h == settings.digest_hour|int }}>{{ '%02d:00'|format(h) }}</option>{% endfor %}</select></label>
+      <label>Time zone <input name="timezone" value="{{ settings.timezone }}" placeholder="America/New_York"></label>
+    </div>
   </section>
 
   <div class="form-actions"><button class="btn btn-primary">Save settings</button></div>
@@ -60,8 +67,18 @@
 </section>
 
 <section class="card">
+  <h2>Status &amp; backups</h2>
+  <p class="muted small">The <a href="/status">Status page</a> shows whether every source is working, and you get a notification if one keeps failing.</p>
+  <p class="muted small">Your wishlist is backed up daily on the server (last 7 days kept). Download a copy now and then, since the server's disk is the only other copy.</p>
+  <div class="backup-row">
+    <form method="post" action="/settings/backup"><button class="btn">Download a backup now</button></form>
+    {% for b in backups %}<a class="chip chip-link" href="/settings/backups/{{ b.name }}">{{ b.stem.replace('wishlist-', '') }}</a>{% endfor %}
+  </div>
+</section>
+
+<section class="card">
   <h2>iPhone Shortcut</h2>
-  <p class="muted small">Same setup as reel-tunes: a Shortcut in the share sheet that POSTs <code>{"url": Shortcut Input}</code> as JSON with header <code>Authorization: Bearer &lt;INGEST_TOKEN&gt;</code> to:</p>
+  <p class="muted small">Works from Instagram, Safari, or any shop's app. Same setup as reel-tunes: a Shortcut in the share sheet that POSTs <code>{"url": Shortcut Input}</code> as JSON with header <code>Authorization: Bearer &lt;INGEST_TOKEN&gt;</code> to:</p>
   <p><code class="copy">{{ ingest_url }}</code></p>
   <p class="muted small">Show <code>message</code> from the response in a notification.</p>
 </section>

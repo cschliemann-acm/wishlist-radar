@@ -3,6 +3,13 @@
 {% block title %}Wishlist{% endblock %}
 {% block content %}
 
+{% if problem_count %}
+<a class="card nudge nudge-warn" href="/status">
+  <strong>{{ problem_count }} part{{ 's' if problem_count != 1 }} of the radar need{{ 's' if problem_count == 1 }} attention</strong>
+  <span class="muted">Some searches are failing. See what's wrong →</span>
+</a>
+{% endif %}
+
 {% if not has_sizes %}
 <a class="card nudge" href="/sizes">
   <strong>Add your sizes</strong>

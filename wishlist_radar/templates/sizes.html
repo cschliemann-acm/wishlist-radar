@@ -24,6 +24,21 @@
   </section>
 
   <section class="card">
+    <h2>Your measurements</h2>
+    <p class="muted small">Resale sizes vary a lot, so sellers usually list measurements. Take these from a piece that fits you well, laid flat. Matches on eBay, Grailed and Yahoo! Japan are checked against them, and ones that won't fit stop counting as deals.</p>
+    <div class="form-grid three">
+      <label>Units
+        <select name="meas_unit"><option value="in" {{ 'selected' if settings.meas_unit == 'in' }}>inches</option><option value="cm" {{ 'selected' if settings.meas_unit == 'cm' }}>cm</option></select></label>
+      <label>Pit to pit (chest) <input name="meas_chest" value="{{ settings.meas_chest }}" inputmode="decimal" placeholder="e.g. 22"></label>
+      <label>Length (back) <input name="meas_length" value="{{ settings.meas_length }}" inputmode="decimal" placeholder="e.g. 28"></label>
+      <label>Shoulders <input name="meas_shoulder" value="{{ settings.meas_shoulder }}" inputmode="decimal" placeholder="optional"></label>
+      <label>Sleeve <input name="meas_sleeve" value="{{ settings.meas_sleeve }}" inputmode="decimal" placeholder="optional"></label>
+      <label>Trouser waist (flat) <input name="meas_waist" value="{{ settings.meas_waist }}" inputmode="decimal" placeholder="e.g. 16"></label>
+      <label>Inseam <input name="meas_inseam" value="{{ settings.meas_inseam }}" inputmode="decimal" placeholder="e.g. 31"></label>
+    </div>
+  </section>
+
+  <section class="card">
     <h2>Brand-specific sizes</h2>
     <p class="muted small">For brands that run big or small, or use their own scale. One per line, as <code>Brand: size</code>. These override the sizes above for that brand.</p>
     <label><span class="sr-only">Brand sizes</span>

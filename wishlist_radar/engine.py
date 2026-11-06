@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import logging
+import re
+import sqlite3
 import shutil
 import tempfile
 import threading
@@ -12,13 +14,15 @@ from pathlib import Path
 
 import anthropic
 
-from . import ai, fx, instagram, media, notify, sales
+from . import ai, fx, instagram, media, notify, prices, sales
 from .config import Config
 from .db import DB
-from .sources import Source, SourceStatus
+from .health import Health
+from .sources import ListingUpdate, Source, SourceStatus
 from .sources.ebay import MARKETPLACES, EbaySource
 from .sources.grailed import GrailedSource
 from .sources.shops import ShopsSource, detect, host_key, normalize_url
+from .sources.yahoojp import YahooJapanSource
 
 log = logging.getLogger("wishlist_radar")
 
@@ -27,6 +31,12 @@ TICK_SECONDS = 30
 FRAME_INTERVAL = 2.0   # seconds between regular frames (plus one per scene change)
 MAX_FRAMES = 24
 INTERVAL_CHOICES = [15, 30, 60, 180, 360, 720, 1440]
+RECHECK_HOURS = 6          # how often matched listings are re-checked for price/stock changes
+RECHECK_PER_CHECK = 30
+FIT_CHECKS_PER_CHECK = 10
+PRICE_DROP_MIN = 0.03      # ignore changes under 3%
+BACKUP_KEEP = 7
+SOURCE_NAMES = {"ebay": "eBay", "stores": "Shops", "grailed": "Grailed", "yahoojp": "Yahoo! Japan"}
 SIZE_SETTING_BY_CATEGORY = {"tops": "size_tops", "outerwear": "size_outerwear",
                             "bottoms": "size_bottoms", "shoes": "size_shoes"}
 
@@ -52,7 +62,9 @@ class Engine:
         self._ebay: EbaySource | None = None
         self._grailed = GrailedSource()
         self._shops = ShopsSource(lambda: self.db.stores(), report=lambda sid, f: self.db.update_store(sid, **f))
+        self._yahoojp = YahooJapanSource()
         self._stop = threading.Event()
+        self.health = Health(db, alert=self._push)
 
     # ------------------------------------------------------------------ sources
     def sources(self) -> dict[str, Source]:
@@ -61,7 +73,8 @@ class Engine:
         marketplace = self.db.settings()["ebay_marketplace"]
         if self._ebay is None or self._ebay.marketplace != marketplace:
             self._ebay = EbaySource(self.c.ebay_client_id, self.c.ebay_client_secret, marketplace)
-        return {"ebay": self._ebay, "stores": self._shops, "grailed": self._grailed}
+        return {"ebay": self._ebay, "stores": self._shops, "grailed": self._grailed,
+                "yahoojp": self._yahoojp}
 
     def source_statuses(self) -> dict[str, SourceStatus]:
         return {k: s.status() for k, s in self.sources().items()}
@@ -178,6 +191,27 @@ class Engine:
                             uploader=post.uploader, images=frames, transcript=transcript)
         return self._save_found(found, frames, url, post_id)
 
+    def import_link(self, url: str, note: str = "") -> dict:
+        """Instagram posts, or any product page (shop, Grailed, eBay, brand site…)."""
+        if re.search(r"(^|//|\.)instagram\.com/", url):
+            return self.import_instagram(url, note)
+        from . import product_page
+        post_id = self._new_post(url, "link", note)
+        try:
+            page = product_page.fetch(url, self.import_dir(post_id))
+        except Exception as e:
+            self.db.run("UPDATE posts SET error = ? WHERE id = ?", f"Couldn't open the link: {e}"[:300], post_id)
+            raise RuntimeError(f"Couldn't open that link: {e}") from e
+        self._save_info(post_id, caption=page.text[:4000], uploader=page.site, transcript="",
+                        warnings=[], structured=page.structured)
+        images = [page.image] if page.image else []
+        found = ai.identify(self.client, self.c.identify_model,
+                            caption=f"Product page: {url}\n{page.structured}\n\n{page.text}",
+                            uploader=page.site, images=images,
+                            note=(note + "\n" if note else "") + "This is a product page for one item: "
+                            "return just that product (exact name, colourway and brand from the page).")
+        return self._save_found(found, images, url, post_id)
+
     def _transcribe(self, video: Path, tmpdir: Path) -> tuple[str, str]:
         """(transcript, warning). Best-effort: a failure shouldn't stop the import."""
         if self.c.transcribe == "off":
@@ -248,6 +282,34 @@ class Engine:
         return {"summary": found.summary, "item_ids": ids, "items": names, "message": message,
                 "post_id": post_id}
 
+    # ------------------------------------------------------------------ notifications
+    def _push(self, title: str, message: str, url: str = "", image_url: str = "") -> bool:
+        """Send a push notification. Returns False if not configured or it failed."""
+        topic = self.db.settings().get("ntfy_topic")
+        if not topic:
+            return False
+        try:
+            notify.send(topic, title=title, message=message, url=url, image_url=image_url)
+            self.health.ok("Notifications")
+            return True
+        except Exception as e:
+            log.warning("notification failed: %s", e)
+            self.health.db.run("INSERT INTO health (name, last_error, last_error_at, failures) "
+                               "VALUES ('Notifications', ?, ?, 1) ON CONFLICT(name) DO UPDATE SET "
+                               "last_error = excluded.last_error, last_error_at = excluded.last_error_at, "
+                               "failures = failures + 1", str(e)[:300], time.time())
+            return False
+
+    def _listing_alert(self, item: dict, listing: dict, headline: str = "") -> None:
+        price = f"{listing['price']:.0f} {listing['currency']}" if listing["price"] is not None else ""
+        name = f"{item['brand']} {item['name']}".strip()
+        where = listing.get("merchant") or SOURCE_NAMES.get(listing["source"], listing["source"])
+        if self._push(title=(f"{headline}: " if headline else "") + name + (f" · {price}" if price else ""),
+                      message=f"{listing['title']}\n{where}"
+                              + (f" · size {listing['size_text']}" if listing["size_text"] else ""),
+                      url=listing["url"], image_url=listing["image_url"]):
+            self.db.run("UPDATE listings SET notified_at = ? WHERE id = ?", time.time(), listing["id"])
+
     # ------------------------------------------------------------------ checking
     def check_item(self, item_id: int, trigger: str = "schedule") -> None:
         item = self.db.item(item_id)
@@ -260,17 +322,30 @@ class Engine:
             for key in [s for s in item["sources"].split(",") if s]:
                 if key in sources:
                     self._check_source(item, sources[key], settings, trigger)
+            self.recheck_listings(item, settings, force=trigger == "manual")
         finally:
             now = time.time()
             self.db.update_item(item_id, checking=0, last_checked_at=now,
                                 next_check_at=now + item["interval_minutes"] * 60)
 
+    def _query_for(self, item: dict, source: Source) -> str:
+        if source.key != "yahoojp":
+            return item["search_query"]
+        if not item.get("search_query_jp"):
+            jp = ai.japanese_query(self.client, self.c.match_model, item)
+            self.db.update_item(item["id"], search_query_jp=jp)
+            item["search_query_jp"] = jp
+        return item["search_query_jp"]
+
     def _check_source(self, item: dict, source: Source, settings: dict, trigger: str) -> None:
         started = time.time()
         check = {"results": 0, "new_listings": 0, "matches": 0, "deals": 0, "error": ""}
+        name = SOURCE_NAMES.get(source.key, source.key)
+        query = item["search_query"]
         try:
-            results = source.search(item["search_query"], max_price=item["max_price"],
-                                    brand=item.get("brand") or "")
+            query = self._query_for(item, source)
+            results = source.search(query, max_price=item["max_price"], brand=item.get("brand") or "")
+            self.health.ok(name)
             check["results"] = len(results)
             known = self.db.known_listing_ids(item["id"], source.key)
             for l in results:
@@ -286,59 +361,175 @@ class Engine:
             if getattr(source, "partial_errors", None):
                 check["error"] = f"{len(source.partial_errors)} failed: " + "; ".join(
                     source.partial_errors[:3])
-            matches, deals = self._judge_pending(item, source.key, settings)
+            matches, deals = self._judge_pending(item, source, settings)
             check["matches"], check["deals"] = matches, deals
+        except anthropic.APIError as e:
+            log.exception("Claude failed while checking item %s", item["id"])
+            self.health.fail("Claude", e)
+            check["error"] = f"Claude: {e}"[:500]
         except Exception as e:  # recorded on the check, shown in the UI
             log.exception("check failed: item %s on %s", item["id"], source.key)
+            self.health.fail(name, e)
             check["error"] = str(e)[:500]
         self.db.run(
             "INSERT INTO checks (item_id, source, query, trigger, started_at, duration_ms, results,"
             " new_listings, matches, deals, error) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-            item["id"], source.key, item["search_query"], trigger, started,
+            item["id"], source.key, query, trigger, started,
             int((time.time() - started) * 1000), check["results"], check["new_listings"],
             check["matches"], check["deals"], check["error"])
 
-    def _judge_pending(self, item: dict, source_key: str, settings: dict) -> tuple[int, int]:
+    def feedback_text(self, item_id: int) -> str:
+        rows = self.db.all("SELECT title, feedback FROM listings WHERE item_id = ? AND feedback != '' "
+                           "ORDER BY id DESC LIMIT 16", item_id)
+        yes = [r["title"] for r in rows if r["feedback"] == "up"][:8]
+        no = [r["title"] for r in rows if r["feedback"] == "down"][:8]
+        parts = []
+        if yes:
+            parts.append("Confirmed as the item:\n" + "\n".join(f"- {t}" for t in yes))
+        if no:
+            parts.append("Rejected as not what they want:\n" + "\n".join(f"- {t}" for t in no))
+        return "\n".join(parts)
+
+    def measurements(self, item: dict, settings: dict) -> str:
+        unit = settings.get("meas_unit", "in")
+        fields = (("meas_waist", "waist (flat)"), ("meas_inseam", "inseam")) if item.get("category") == "bottoms" \
+            else (("meas_chest", "pit to pit"), ("meas_length", "length"), ("meas_shoulder", "shoulders"),
+                  ("meas_sleeve", "sleeve"))
+        if item.get("category") not in ("tops", "outerwear", "bottoms"):
+            return ""
+        vals = [f"{label}: {settings.get(k)} {unit}" for k, label in fields if settings.get(k)]
+        return "; ".join(vals)
+
+    def evaluate(self, item: dict, l: dict, settings: dict | None = None) -> bool:
+        """Is this listing a deal right now? The one place the rules live."""
+        settings = settings or self.db.settings()
+        if l["verdict"] != "match" or l.get("dismissed") or l.get("feedback") == "down":
+            return False
+        if l.get("availability") == "sold" or l.get("size_ok") == "no" or l.get("fit") == "bad":
+            return False
+        if l.get("feedback") != "up" and (l.get("score") or 0) < float(settings["min_match_score"]):
+            return False
+        if item["max_price"] is None or l["price"] is None:
+            return True  # no budget, or an article about the item
+        price = prices.to_currency(l["price"], l["currency"], self.currency(), fetch=True)
+        return price is not None and price <= item["max_price"]
+
+    def _judge_pending(self, item: dict, source: Source, settings: dict) -> tuple[int, int]:
         pending = self.db.all("SELECT * FROM listings WHERE item_id = ? AND source = ? AND "
-                              "verdict = 'pending' ORDER BY id", item["id"], source_key)
+                              "verdict = 'pending' ORDER BY id", item["id"], source.key)
         wanted_size = self.wanted_size(item, settings)
         min_score = float(settings["min_match_score"])
-        currency = self.currency()
+        feedback = self.feedback_text(item["id"])
+        measurements = self.measurements(item, settings)
+        fit_budget = FIT_CHECKS_PER_CHECK
         matches = deals = 0
         for start in range(0, len(pending), JUDGE_BATCH):
             batch = pending[start:start + JUDGE_BATCH]
             for v in ai.judge(self.client, self.c.match_model, item, wanted_size, batch,
-                              fit_notes=settings.get("size_notes", "")):
-                l = batch[v.index]
+                              fit_notes=settings.get("size_notes", ""), feedback=feedback):
+                l = dict(batch[v.index])
                 is_match = v.verdict == "match" and v.score >= min_score
-                # Articles (no price) count: a post about the item is worth knowing about
-                price = (l["price"] if l["currency"] in (currency, "") else
-                         fx.convert(l["price"], l["currency"], currency))
-                in_budget = (item["max_price"] is None or l["price"] is None or
-                             (price is not None and price <= item["max_price"]))
-                is_deal = is_match and v.size_ok != "no" and in_budget
-                verdict = v.verdict if v.verdict != "match" or is_match else "maybe"
-                self.db.run("UPDATE listings SET verdict=?, score=?, size_ok=?, reason=?, is_deal=? "
-                            "WHERE id=?", verdict, v.score, v.size_ok, v.reason, int(is_deal), l["id"])
+                l.update(verdict=v.verdict if v.verdict != "match" or is_match else "maybe",
+                         score=v.score, size_ok=v.size_ok, reason=v.reason)
+                # Resale listings: compare the seller's measurements with yours
+                if is_match and measurements and fit_budget and hasattr(source, "details") \
+                        and source.key != "stores":
+                    fit_budget -= 1
+                    try:
+                        details = source.details(l)
+                        if details:
+                            fc = ai.fit_check(self.client, self.c.match_model, measurements, item, l, details)
+                            l.update(fit=fc.fit, fit_note=fc.note)
+                    except Exception as e:
+                        log.warning("fit check failed: %s", e)
+                l["is_deal"] = int(self.evaluate(item, l, settings))
+                self.db.run("UPDATE listings SET verdict=?, score=?, size_ok=?, reason=?, is_deal=?, "
+                            "fit=?, fit_note=? WHERE id=?", l["verdict"], l["score"], l["size_ok"],
+                            l["reason"], l["is_deal"], l.get("fit", ""), l.get("fit_note", ""), l["id"])
                 matches += is_match
-                if is_deal:
+                if l["is_deal"]:
                     deals += 1
-                    self._alert(item, l, settings)
+                    self._listing_alert(item, l, "Deal")
+        if pending:
+            self.health.ok("Claude")
         return matches, deals
 
-    def _alert(self, item: dict, listing: dict, settings: dict) -> None:
-        if not settings.get("ntfy_topic"):
-            return
-        price = f"{listing['price']:.0f} {listing['currency']}" if listing["price"] is not None else ""
-        try:
-            notify.send(settings["ntfy_topic"],
-                        title=f"{item['brand']} {item['name']}".strip() + (f" · {price}" if price else ""),
-                        message=f"{listing['title']}\n{listing['source'].title()}"
-                                + (f" · size {listing['size_text']}" if listing["size_text"] else ""),
-                        url=listing["url"], image_url=listing["image_url"])
-            self.db.run("UPDATE listings SET notified_at = ? WHERE id = ?", time.time(), listing["id"])
-        except Exception:
-            log.exception("notification failed")
+    # ------------------------------------------------------------------ price & stock tracking
+    def recheck_listings(self, item: dict, settings: dict | None = None, force: bool = False) -> int:
+        """Re-check matched listings: price drops, back in stock in your size, sold."""
+        settings = settings or self.db.settings()
+        sources = self.sources()
+        cutoff = time.time() - (0 if force else RECHECK_HOURS * 3600)
+        rows = self.db.all("SELECT * FROM listings WHERE item_id = ? AND verdict = 'match' AND dismissed = 0 "
+                           "AND availability != 'sold' AND COALESCE(last_checked_at, 0) <= ? "
+                           "ORDER BY last_checked_at LIMIT ?", item["id"], cutoff, RECHECK_PER_CHECK)
+        wanted = self.wanted_size(item, settings)
+        changed = 0
+        for l in rows:
+            source = sources.get(l["source"])
+            if not source or not hasattr(source, "refresh"):
+                continue
+            try:
+                update = source.refresh(l)
+            except Exception as e:
+                log.warning("re-check failed for listing %s: %s", l["id"], e)
+                self.db.run("UPDATE listings SET last_checked_at = ? WHERE id = ?", time.time(), l["id"])
+                continue
+            changed += self._apply_update(item, l, update, wanted, settings)
+        return changed
+
+    def _event(self, item: dict, l: dict, kind: str, old: str = "", new: str = "") -> int:
+        return self.db.run("INSERT INTO events (item_id, listing_id, kind, old_value, new_value, created_at) "
+                           "VALUES (?,?,?,?,?,?)", item["id"], l["id"], kind, old, new, time.time())
+
+    def _apply_update(self, item: dict, l: dict, update: ListingUpdate | None, wanted: str,
+                      settings: dict) -> int:
+        now = time.time()
+        if update is None:
+            self.db.run("UPDATE listings SET last_checked_at = ? WHERE id = ?", now, l["id"])
+            return 0
+        was_deal = bool(l["is_deal"])
+        new = dict(l)
+        headline = ""
+        events = 0
+        if not update.available:
+            new["availability"] = "sold"
+            self._event(item, l, "sold")
+            events += 1
+        else:
+            if update.price is not None and l["price"] is not None:
+                if update.price < l["price"] * (1 - PRICE_DROP_MIN):
+                    new.update(price=update.price, prev_price=l["price"])
+                    eid = self._event(item, l, "price_drop", f"{l['price']:.2f}", f"{update.price:.2f}")
+                    events += 1
+                    headline = f"Price drop ({l['price']:.0f} → {update.price:.0f} {l['currency']})"
+                    self.db.run("UPDATE events SET notified = 1 WHERE id = ?", eid)
+                elif update.price > l["price"] * (1 + PRICE_DROP_MIN):
+                    new["price"] = update.price
+                    self._event(item, l, "price_up", f"{l['price']:.2f}", f"{update.price:.2f}")
+            if update.size_text is not None and update.size_text != l["size_text"]:
+                new["size_text"] = update.size_text
+                before = prices.size_in_stock(wanted, l["size_text"])
+                after = prices.size_in_stock(wanted, update.size_text)
+                if after is True and before is not True:
+                    new["size_ok"] = "yes"
+                    eid = self._event(item, l, "restock", l["size_text"] or "", update.size_text)
+                    events += 1
+                    headline = headline or "Back in your size"
+                    self.db.run("UPDATE events SET notified = 1 WHERE id = ?", eid)
+                elif after is False and before is True:
+                    new["size_ok"] = "no"
+                    self._event(item, l, "size_gone", l["size_text"] or "", update.size_text)
+                    events += 1
+        new["is_deal"] = int(self.evaluate(item, new, settings))
+        self.db.run("UPDATE listings SET price = ?, prev_price = ?, size_text = ?, size_ok = ?, availability = ?, "
+                    "is_deal = ?, last_checked_at = ? WHERE id = ?", new["price"], new.get("prev_price"),
+                    new["size_text"], new["size_ok"], new["availability"], new["is_deal"], now, l["id"])
+        if new["is_deal"] and (headline or not was_deal):
+            self._listing_alert(item, new, headline or "Now a deal")
+        elif headline and new["availability"] != "sold":
+            self._listing_alert(item, new, headline)
+        return events
 
     def check_now(self, item_id: int) -> None:
         threading.Thread(target=self.check_item, args=(item_id, "manual"), daemon=True).start()
@@ -372,8 +563,10 @@ class Engine:
                     self._upsert_sale(f, src)
                 self.db.run("UPDATE sale_sources SET status = ?, last_fetched_at = ?, last_count = ? "
                             "WHERE id = ?", f"{len(found)} sales found", time.time(), len(found), src["id"])
+                self.health.ok(f"Sales: {src['name']}")
             except Exception as e:
                 log.warning("sale source %s failed: %s", src["name"], e)
+                self.health.fail(f"Sales: {src['name']}", e)
                 self.db.run("UPDATE sale_sources SET status = ?, last_fetched_at = ? WHERE id = ?",
                             f"Couldn't read: {e}"[:200], time.time(), src["id"])
         self.match_sales()
@@ -407,23 +600,136 @@ class Engine:
             matched = ", ".join(hits)
             if matched != s["matched_brands"]:
                 self.db.run("UPDATE sales SET matched_brands = ? WHERE id = ?", matched, s["id"])
-            if hits and not s["notified_at"] and sales.status_of(s) != "past" \
-                    and settings.get("ntfy_topic"):
+            if hits and not s["notified_at"] and sales.status_of(s) != "past":
                 when = " – ".join(d for d in (s["start_date"], s["end_date"]) if d) or "dates TBA"
-                try:
-                    notify.send(settings["ntfy_topic"], title=f"Sample sale: {s['brand']}",
-                                message=f"{s['title']}\n{when}"
-                                        + (f" · {s['location']}" if s["location"] else " · online"
-                                           if s["online"] else "")
-                                        + (f"\n{s['discount']}" if s["discount"] else ""),
-                                url=s["url"])
+                where = f" · {s['location']}" if s["location"] else (" · online" if s["online"] else "")
+                if self._push(f"Sample sale: {s['brand']}",
+                              f"{s['title']}\n{when}{where}" + (f"\n{s['discount']}" if s["discount"] else ""),
+                              url=s["url"]):
                     self.db.run("UPDATE sales SET notified_at = ? WHERE id = ?", time.time(), s["id"])
-                except Exception:
-                    log.exception("sale notification failed")
 
     def refresh_sales_async(self, force: bool = True) -> None:
         threading.Thread(target=self.refresh_sales, args=(force,), daemon=True,
                          name="sales").start()
+
+    # ------------------------------------------------------------------ daily digest
+    def digest_text(self, since: float) -> tuple[str, str] | None:
+        """(title, message) summarising what happened since `since`, or None if nothing did."""
+        maybes = self.db.one("SELECT COUNT(*) n FROM listings WHERE verdict = 'maybe' AND first_seen_at > ?",
+                             since)["n"]
+        matches = self.db.one("SELECT COUNT(*) n FROM listings WHERE verdict = 'match' AND is_deal = 0 "
+                              "AND dismissed = 0 AND first_seen_at > ?", since)["n"]
+        deals = self.db.one("SELECT COUNT(*) n FROM listings WHERE is_deal = 1 AND first_seen_at > ?", since)["n"]
+        changes = self.db.all("SELECT kind, COUNT(*) n FROM events WHERE created_at > ? GROUP BY kind", since)
+        new_sales = self.db.one("SELECT COUNT(*) n FROM sales WHERE first_seen_at > ? AND hidden = 0", since)["n"]
+        problems = self.health.problems()
+        lines = []
+        if deals:
+            lines.append(f"{deals} deal{'s' if deals != 1 else ''} (already sent)")
+        if matches:
+            lines.append(f"{matches} new match{'es' if matches != 1 else ''} over budget or not your size")
+        if maybes:
+            lines.append(f"{maybes} possible match{'es' if maybes != 1 else ''} to look at")
+        labels = {"price_drop": "price drop", "sold": "sold", "restock": "back in your size",
+                  "price_up": "price rise", "size_gone": "your size sold out"}
+        for c in changes:
+            lines.append(f"{c['n']} {labels.get(c['kind'], c['kind'])}{'s' if c['n'] != 1 and c['kind'] in ('price_drop', 'price_up') else ''}")
+        if new_sales:
+            lines.append(f"{new_sales} new sample sale{'s' if new_sales != 1 else ''}")
+        if problems:
+            lines.append("Needs attention: " + ", ".join(p["name"] for p in problems[:4]))
+        if not lines:
+            return None
+        return "Your wishlist today", "\n".join(f"• {l}" for l in lines)
+
+    def maybe_send_digest(self, now: float | None = None) -> bool:
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+
+        settings = self.db.settings()
+        if not settings.get("digest_enabled") or not settings.get("ntfy_topic"):
+            return False
+        now = now or time.time()
+        try:
+            tz = ZoneInfo(settings.get("timezone") or "America/New_York")
+        except Exception:
+            tz = ZoneInfo("UTC")
+        local = datetime.fromtimestamp(now, tz)
+        last = settings.get("last_digest_at") or 0
+        last_day = datetime.fromtimestamp(last, tz).date() if last else None
+        if local.hour < int(settings.get("digest_hour", 9)) or last_day == local.date():
+            return False
+        self.db.save_settings({"last_digest_at": now})
+        summary = self.digest_text(last or now - 86400)
+        if not summary:
+            return False
+        return self._push(summary[0], summary[1], url=settings.get("app_url", ""))
+
+    # ------------------------------------------------------------------ backups
+    def backup(self) -> Path:
+        """Copy the database to data/backups (keeps the last few days)."""
+        folder = self.c.data_dir / "backups"
+        folder.mkdir(parents=True, exist_ok=True)
+        dest = folder / f"wishlist-{time.strftime('%Y-%m-%d')}.db"
+        src = sqlite3.connect(self.c.db_path)
+        out = sqlite3.connect(dest)
+        with out:
+            src.backup(out)
+        src.close()
+        out.close()
+        for old in sorted(folder.glob("wishlist-*.db"))[:-BACKUP_KEEP]:
+            old.unlink(missing_ok=True)
+        self.db.save_settings({"last_backup_at": time.time()})
+        return dest
+
+    def backups(self) -> list[Path]:
+        folder = self.c.data_dir / "backups"
+        return sorted(folder.glob("wishlist-*.db"), reverse=True) if folder.exists() else []
+
+    # ------------------------------------------------------------------ self-test
+    def self_test(self) -> None:
+        """Try every moving part once and record the results on the Status page."""
+        def attempt(name: str, fn) -> None:
+            try:
+                fn()
+                self.health.ok(name)
+            except Exception as e:
+                self.health.fail(name, e)
+
+        def claude():
+            r = self.client.messages.create(model=self.c.match_model, max_tokens=200,
+                                            messages=[{"role": "user", "content": "Reply with: ok"}],
+                                            output_config={"effort": "low"})
+            if r.stop_reason == "refusal":
+                raise RuntimeError("declined")
+
+        attempt("Claude", claude)
+        sources = self.sources()
+        if self.c.ebay_client_id:
+            attempt("eBay", lambda: sources["ebay"].search("vintage jacket", max_price=None))
+        else:
+            self.health.fail("eBay", "No eBay keys yet: add EBAY_CLIENT_ID and EBAY_CLIENT_SECRET")
+        in_use = " ".join(i["sources"] for i in self.db.items(("active", "paused")))
+        if "grailed" in in_use:
+            attempt("Grailed", lambda: sources["grailed"].search("jacket", max_price=None))
+        if "yahoojp" in in_use:
+            attempt("Yahoo! Japan", lambda: sources["yahoojp"].search("ジャケット", max_price=None))
+        attempt("Exchange rates", lambda: fx.rates("USD") or (_ for _ in ()).throw(
+            RuntimeError("couldn't fetch exchange rates")))
+        if self.c.transcribe != "off":
+            def stt():
+                import httpx
+                from .transcribe import PROVIDERS
+                base = PROVIDERS[self.c.transcribe][0]
+                r = httpx.get(f"{base}/models", headers={"Authorization": f"Bearer {self.c.transcribe_api_key}"},
+                              timeout=20)
+                if r.status_code != 200:
+                    raise RuntimeError(f"{self.c.transcribe} rejected the key ({r.status_code})")
+            attempt("Speech-to-text", stt)
+        self.refresh_sales(force=True)
+
+    def self_test_async(self) -> None:
+        threading.Thread(target=self.self_test, daemon=True, name="self-test").start()
 
     # ------------------------------------------------------------------ scheduler
     def start_scheduler(self) -> None:
@@ -443,6 +749,9 @@ class Engine:
                         break
                     self.check_item(item["id"])
                 self.refresh_sales()  # no-op unless a source is due (every few hours)
+                self.maybe_send_digest()
+                if time.time() - (self.db.settings().get("last_backup_at") or 0) > 86400:
+                    self.backup()
             except Exception:
                 log.exception("scheduler tick failed")
             self._stop.wait(TICK_SECONDS)

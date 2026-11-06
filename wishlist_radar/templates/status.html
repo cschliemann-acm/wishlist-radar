@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m with context %}
+{% block title %}Status{% endblock %}
+{% block content %}
+<a href="/settings" class="crumb">← Settings</a>
+<div class="section-head row">
+  <div>
+    <h1>Status</h1>
+    <p class="muted">Whether every part of the radar is working. If something fails three times in a row you get a notification.</p>
+  </div>
+  <form method="post" action="/status/test"><button class="btn btn-primary btn-sm">Test everything</button></form>
+</div>
+
+<section class="card">
+  <h2>Services</h2>
+  {% for r in rows %}
+    <div class="source-row">
+      <span class="dot {{ 'dot-bad' if r.failures else 'dot-ok' }}"></span>
+      <strong class="status-name">{{ r.name }}</strong>
+      <span class="small grow {{ 'warn' if r.failures else 'muted' }}">
+        {% if r.failures %}Failing{% if r.failures > 1 %} ({{ r.failures }} times in a row){% endif %}: {{ r.last_error }}
+          {% if r.last_ok_at %}<span class="muted"> · last worked {{ m.when(r.last_ok_at) }}</span>{% else %}<span class="muted"> · hasn't worked yet</span>{% endif %}
+        {% else %}Working · {{ m.when(r.last_ok_at) }}{% endif %}
+      </span>
+    </div>
+  {% else %}
+    <p class="empty-line">Nothing has run yet. Tap “Test everything”, or wait for the first searches.</p>
+  {% endfor %}
+</section>
+
+<section class="card">
+  <h2>Marketplaces</h2>
+  {% for key, src in sources.items() %}
+    {% set st = statuses[key] %}
+    <div class="source-row">
+      <span class="dot {{ 'dot-ok' if st.ok else 'dot-bad' }}"></span>
+      <strong class="status-name">{{ src.label }}</strong>
+      <span class="small muted grow">{{ st.message }}{% if src.experimental %} · experimental{% endif %}</span>
+    </div>
+  {% endfor %}
+  {% if stores_bad %}
+    <h3>Shops with problems</h3>
+    {% for s in stores_bad %}<div class="source-row"><span class="dot dot-bad"></span><strong class="status-name">{{ s.name }}</strong><span class="small warn grow">{{ s.status }}</span></div>{% endfor %}
+    <p class="muted small">Manage them on the <a href="/shops">Shops</a> page.</p>
+  {% endif %}
+</section>
+
+<section class="card">
+  <h2>Housekeeping</h2>
+  <div class="source-row"><span class="dot {{ 'dot-ok' if last_backup else 'dot-bad' }}"></span><strong class="status-name">Backups</strong>
+    <span class="small muted grow">{% if last_backup %}Last backup {{ m.when(last_backup) }}{% else %}No backup yet (one is made daily){% endif %} · <a href="/settings">download</a></span></div>
+  <div class="source-row"><span class="dot dot-ok"></span><strong class="status-name">Price &amp; stock tracking</strong>
+    <span class="small muted grow">{{ recheck_due }} matched listing{{ 's' if recheck_due != 1 }} re-checked every 6 hours</span></div>
+  <div class="source-row"><span class="dot {{ 'dot-ok' if settings.ntfy_topic else 'dot-bad' }}"></span><strong class="status-name">Notifications</strong>
+    <span class="small muted grow">{% if settings.ntfy_topic %}ntfy topic set{% if settings.digest_enabled %} · daily summary at {{ '%02d:00'|format(settings.digest_hour|int) }}{% endif %}{% else %}No ntfy topic: set one in Settings to get alerts{% endif %}</span></div>
+</section>
+{% endblock %}

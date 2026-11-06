@@ -99,7 +99,7 @@ summary: one short sentence about the post."""
 
 def _image_block(path: Path) -> dict:
     data = base64.standard_b64encode(path.read_bytes()).decode()
-    mt = "image/png" if path.suffix.lower() == ".png" else "image/jpeg"
+    mt = {".png": "image/png", ".webp": "image/webp", ".gif": "image/gif"}.get(path.suffix.lower(), "image/jpeg")
     return {"type": "image", "source": {"type": "base64", "media_type": mt, "data": data}}
 
 
@@ -201,11 +201,15 @@ it isn't or it's sold out. Entries with condition "Article" are posts from news/
 "match" only if the post is specifically about the wanted item (e.g. a deal on it or its \
 release), not a passing mention; size_ok "unknown".
 
+If user feedback is given, it shows listings the user confirmed or rejected for this item \
+before: treat it as the best guide to what they mean (e.g. if they rejected faded or cropped \
+ones, reject similar listings).
+
 Return one result per listing, using its index."""
 
 
 def judge(client: anthropic.Anthropic, model: str, item: dict, wanted_size: str,
-          listings: list[dict], fit_notes: str = "") -> list[Verdict]:
+          listings: list[dict], fit_notes: str = "", feedback: str = "") -> list[Verdict]:
     lines = []
     for i, l in enumerate(listings):
         price = f"{l['price']:.2f} {l['currency']}" if l.get("price") is not None else "?"
@@ -226,7 +230,9 @@ def judge(client: anthropic.Anthropic, model: str, item: dict, wanted_size: str,
         max_tokens=16000,
         system=JUDGE_SYSTEM,
         messages=[{"role": "user", "content":
-                   f"<wanted_item>\n{wanted}\n</wanted_item>\n\n<listings>\n"
+                   f"<wanted_item>\n{wanted}\n</wanted_item>\n\n"
+                   + (f"<user_feedback>\n{feedback}\n</user_feedback>\n\n" if feedback else "")
+                   + "<listings>\n"
                    + "\n".join(lines) + "\n</listings>"}],
         output_config={"effort": "low", "format": {"type": "json_schema", "schema": JUDGE_SCHEMA}},
     )
@@ -313,3 +319,63 @@ def extract_sales(client: anthropic.Anthropic, model: str, page_text: str, sourc
         output_config={"effort": "low", "format": {"type": "json_schema", "schema": SALES_SCHEMA}},
     )
     return FoundSales.model_validate(json.loads(_first_text(response))).sales
+
+
+# --------------------------------------------------------------------------- fit check
+class FitCheck(BaseModel):
+    fit: Literal["good", "close", "bad", "unknown"]
+    note: str
+
+
+FIT_SCHEMA = {
+    "type": "object",
+    "properties": {"fit": {"type": "string", "enum": ["good", "close", "bad", "unknown"]},
+                   "note": {"type": "string"}},
+    "required": ["fit", "note"],
+    "additionalProperties": False,
+}
+
+FIT_SYSTEM = """You compare a resale listing's measurements with the buyer's own measurements \
+(taken from a garment that fits them well, laid flat). Find the measurements in the listing \
+text (sellers write e.g. "p2p 22in", "pit to pit 56cm", "waist 16 flat", "inseam 31"); convert \
+units if needed.
+- fit "good": the key measurements (chest for tops/outerwear, waist + inseam for trousers) are \
+within about 1 inch / 2.5 cm.
+- "close": within about 2 inches / 5 cm, or only some measurements given and those are fine.
+- "bad": clearly too small or too big on a key measurement.
+- "unknown": the listing gives no usable measurements, or it's shoes/accessories.
+note: a few words with the numbers you compared, e.g. "p2p 22.5in vs your 22in"."""
+
+
+def fit_check(client: anthropic.Anthropic, model: str, measurements: str, item: dict,
+              listing: dict, details: str) -> FitCheck:
+    response = client.messages.create(
+        model=model,
+        max_tokens=4000,
+        system=FIT_SYSTEM,
+        messages=[{"role": "user", "content":
+                   f"<buyer_measurements>\n{measurements}\n</buyer_measurements>\n"
+                   f"<item_type>{item.get('category', '')}: {item.get('name', '')}</item_type>\n"
+                   f"<listing>\n{listing['title']} | size {listing.get('size_text') or '?'}\n"
+                   f"{details}\n</listing>"}],
+        output_config={"effort": "low", "format": {"type": "json_schema", "schema": FIT_SCHEMA}},
+    )
+    return FitCheck.model_validate(json.loads(_first_text(response)))
+
+
+# --------------------------------------------------------------------------- Japanese query
+def japanese_query(client: anthropic.Anthropic, model: str, item: dict) -> str:
+    """A short Yahoo! Japan Auctions search query for the item (brand in katakana etc.)."""
+    response = client.messages.create(
+        model=model,
+        max_tokens=2000,
+        system="You write search queries for Yahoo! Japan Auctions. Reply with only the query: "
+               "the brand as Japanese sellers write it (usually katakana, e.g. キャピタル for "
+               "Kapital, ビズビム for visvim) plus 1-3 Japanese words for the item type, model or "
+               "colour. No quotes, no explanation.",
+        messages=[{"role": "user", "content":
+                   f"{item.get('brand', '')} {item['name']} ({item.get('color', '')}, "
+                   f"{item.get('category', '')}). English query: {item['search_query']}"}],
+        output_config={"effort": "low"},
+    )
+    return _first_text(response).strip().strip('"').splitlines()[0][:80]

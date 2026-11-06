@@ -23,7 +23,7 @@ from xml.etree import ElementTree as ET
 
 import httpx
 
-from . import Listing, SourceStatus
+from . import Listing, ListingUpdate, SourceStatus
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 "
@@ -314,6 +314,32 @@ class ShopsSource:
             body = r.text
             self._feed_cache[store["feed_url"]] = (time.time(), body)
         return parse_feed(body, store)
+
+    def _product_js(self, url: str) -> dict | None:
+        r = httpx.get(url + ".js", headers=HEADERS, timeout=20, follow_redirects=True)
+        if r.status_code == 404:
+            return None
+        if r.status_code != 200:
+            raise RuntimeError(f"product page returned {r.status_code}")
+        return r.json()
+
+    def refresh(self, listing: dict) -> ListingUpdate | None:
+        if listing.get("condition") == "Article" or "/products/" not in listing["url"]:
+            return None
+        product = self._product_js(listing["url"])
+        if product is None:
+            return ListingUpdate(available=False)
+        tmp = apply_product_js(Listing(listing_id="", title="", price=listing["price"],
+                                       currency="", url=listing["url"]), product)
+        any_available = any(v.get("available") for v in product.get("variants") or [])
+        return ListingUpdate(available=any_available, price=tmp.price, size_text=tmp.size_text)
+
+    def details(self, listing: dict) -> str:
+        if "/products/" not in listing["url"]:
+            return ""
+        product = self._product_js(listing["url"]) or {}
+        text = re.sub(r"<[^>]+>", " ", html.unescape(product.get("description") or ""))
+        return re.sub(r"\s+", " ", text).strip()[:6000]
 
     def enrich(self, listing: Listing) -> Listing:
         """For new Shopify products: sizes in stock and accurate price."""

@@ -21,6 +21,14 @@ class Listing:
 
 
 @dataclass
+class ListingUpdate:
+    """Fresh state of a listing seen before (from Source.refresh)."""
+    available: bool = True          # False = sold / ended / removed
+    price: float | None = None
+    size_text: str | None = None    # shops: sizes in stock now
+
+
+@dataclass
 class SourceStatus:
     ok: bool
     message: str

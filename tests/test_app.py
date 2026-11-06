@@ -478,3 +478,212 @@ def test_sales_page_renders_and_filters(client):
     assert "Our Legacy" in page and "Kapital" in page and "Sandro" not in page   # menswear-only default
     online = c.get("/sales?show=online").text
     assert "Kapital" in online and ">Our Legacy<" not in online
+
+
+# ---------------------------------------------------------------- tracking, feedback, prices, fit
+from wishlist_radar.sources import ListingUpdate  # noqa: E402
+
+
+class RefreshableSource(FakeSource):
+    def __init__(self, key, listings, updates=None, details_text=""):
+        super().__init__(key, listings)
+        self.updates, self.details_text = updates or {}, details_text
+
+    def refresh(self, listing):
+        return self.updates.get(listing["listing_id"])
+
+    def details(self, listing):
+        return self.details_text
+
+
+def _match_all(monkeypatch, size_ok="yes"):
+    monkeypatch.setattr(ai, "judge", lambda c, m, item, size, ls, **kw: [
+        ai.Verdict(index=i, verdict="match", score=0.95, size_ok=size_ok, reason="") for i in range(len(ls))])
+
+
+def test_size_in_stock():
+    from wishlist_radar.prices import size_in_stock
+    assert size_in_stock("M / 48", "In stock: 46, 48, 50") is True
+    assert size_in_stock("US 10 / UK 9", "In stock: US 9, US 10, US 11") is True
+    assert size_in_stock("US 10", "In stock: US 10.5, US 11") is False
+    assert size_in_stock("M", "Sold out") is False
+    assert size_in_stock("M", "Size M") is None and size_in_stock("", "In stock: M") is None
+
+
+def test_recheck_price_drop_restock_and_sold(tmp_path, monkeypatch):
+    sent = []
+    shop = RefreshableSource("stores", [
+        Listing(listing_id="s1", title="Box Shirt", price=260, currency="USD",
+                url="https://shop/products/box-shirt", size_text="In stock: 46, 50"),
+        Listing(listing_id="s2", title="Box Shirt", price=150, currency="USD", url="https://shop/products/b2")])
+    eng = make_engine(tmp_path, {"stores": shop})
+    eng.db.save_settings({"size_tops": "48", "ntfy_topic": "t"})
+    monkeypatch.setattr(eng, "_push", lambda title, message, url="", image_url="": sent.append(title) or True)
+    _match_all(monkeypatch, size_ok="no")
+    item_id = eng.db.create_item(status="active", name="Box Shirt", brand="Our Legacy", category="tops",
+                                 search_query="q", sources="stores", max_price=200)
+    eng.check_item(item_id)
+    assert sent == []                                     # 48 not in stock at first
+
+    shop.updates = {"s1": ListingUpdate(price=180, size_text="In stock: 46, 48, 50"),
+                    "s2": ListingUpdate(available=False)}
+    eng.recheck_listings(eng.db.item(item_id), force=True)
+    s1 = eng.db.one("SELECT * FROM listings WHERE listing_id = 's1'")
+    s2 = eng.db.one("SELECT * FROM listings WHERE listing_id = 's2'")
+    assert (s1["price"], s1["prev_price"], s1["size_ok"], s1["is_deal"]) == (180, 260, "yes", 1)
+    assert s2["availability"] == "sold" and s2["is_deal"] == 0
+    kinds = sorted(e["kind"] for e in eng.db.all("SELECT kind FROM events"))
+    assert kinds == ["price_drop", "restock", "sold"]
+    assert len(sent) == 1 and sent[0].startswith("Price drop (260 → 180 USD)")
+
+
+def test_feedback_teaches_judge_and_hides(client, monkeypatch):
+    c, eng = client
+    c.post("/login", data={"password": "pw"})
+    item_id = eng.db.create_item(status="active", name="Box Shirt", search_query="q", sources="ebay")
+    a = eng.db.add_listing(item_id, "ebay", listing_id="a", title="Box Shirt faded", price=100, currency="USD")
+    b = eng.db.add_listing(item_id, "ebay", listing_id="b", title="Box Shirt mint", price=100, currency="USD")
+    eng.db.run("UPDATE listings SET verdict='maybe', score=0.5")
+    c.post(f"/listings/{a}/feedback", data={"value": "down"})
+    c.post(f"/listings/{b}/feedback", data={"value": "up"})
+    la = eng.db.one("SELECT * FROM listings WHERE id = ?", a)
+    lb = eng.db.one("SELECT * FROM listings WHERE id = ?", b)
+    assert la["dismissed"] == 1 and la["feedback"] == "down"
+    assert lb["verdict"] == "match" and lb["is_deal"] == 1
+    text = eng.feedback_text(item_id)
+    assert "Confirmed as the item:\n- Box Shirt mint" in text and "Rejected" in text and "faded" in text
+
+
+def test_price_stats_and_budget_suggestion():
+    from wishlist_radar import fx, prices
+    fx.set_rates("USD", {"USD": 1.0, "GBP": 0.8})
+    ls = [{"price": p, "currency": "USD"} for p in (200, 220, 240)] + [{"price": 160, "currency": "GBP"}]
+    st = prices.stats(ls, "USD")
+    assert st["n"] == 4 and st["median"] == 210 and st["low"] == 200
+    assert prices.below_typical(150, 210, 4) == 29 and prices.below_typical(200, 210, 4) is None
+    assert prices.below_typical(100, 210, 2) is None
+    assert prices.suggested_budget(210, 4) == 180
+
+
+def test_fit_check_blocks_deal_when_it_wont_fit(tmp_path, monkeypatch):
+    ebay = RefreshableSource("ebay", [Listing(listing_id="e1", title="Box Shirt 48", price=100, currency="USD",
+                                              url="u")], details_text="p2p 20in, length 27in")
+    eng = make_engine(tmp_path, {"ebay": ebay})
+    eng.db.save_settings({"meas_chest": "22.5", "meas_unit": "in"})
+    _match_all(monkeypatch, size_ok="yes")
+    seen = {}
+
+    def fit(client, model, measurements, item, listing, details):
+        seen.update(measurements=measurements, details=details)
+        return ai.FitCheck(fit="bad", note="p2p 20in vs your 22.5in")
+
+    monkeypatch.setattr(ai, "fit_check", fit)
+    item_id = eng.db.create_item(status="active", name="Box Shirt", category="tops", search_query="q", sources="ebay")
+    eng.check_item(item_id)
+    l = eng.db.one("SELECT * FROM listings")
+    assert (l["verdict"], l["fit"], l["is_deal"]) == ("match", "bad", 0)
+    assert seen["measurements"] == "pit to pit: 22.5 in" and "p2p 20in" in seen["details"]
+
+
+def test_product_page_structured_data():
+    from wishlist_radar.product_page import structured_summary
+    page = '''<html><head><meta property="og:image" content="/img/shirt.jpg">
+      <script type="application/ld+json">{"@context":"https://schema.org","@graph":[{"@type":"Product",
+        "name":"Box Shirt Black Silk","brand":{"@type":"Brand","name":"Our Legacy"},"color":"Black",
+        "offers":{"@type":"Offer","price":"260.00","priceCurrency":"USD"}}]}</script></head></html>'''
+    summary, image = structured_summary(page, "https://shop.com/p/box-shirt")
+    assert "Name: Box Shirt Black Silk" in summary and "Brand: Our Legacy" in summary
+    assert "Price: 260.00 USD" in summary and image == "https://shop.com/img/shirt.jpg"
+
+
+def test_import_link_uses_product_page(tmp_path, monkeypatch):
+    from wishlist_radar import product_page
+    eng = make_engine(tmp_path, {})
+    monkeypatch.setattr(product_page, "fetch", lambda url, folder: product_page.Page(
+        url=url, site="shop.com", structured="Name: Box Shirt\nBrand: Our Legacy", text="page text", image=None))
+    got = {}
+
+    def identify(client, model, **kw):
+        got.update(kw)
+        return ai.Identification(summary="Product page", items=[])
+
+    monkeypatch.setattr(ai, "identify", identify)
+    eng.import_link("https://shop.com/products/box-shirt")
+    assert "Brand: Our Legacy" in got["caption"] and "product page for one item" in got["note"]
+    assert eng.db.one("SELECT kind FROM posts")["kind"] == "link"
+
+
+def test_daily_digest_once_a_day_after_the_hour(tmp_path, monkeypatch):
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    eng = make_engine(tmp_path, {})
+    eng.db.save_settings({"ntfy_topic": "t", "digest_hour": 9, "timezone": "America/New_York"})
+    sent = []
+    monkeypatch.setattr(eng, "_push", lambda title, message, url="": sent.append(message) or True)
+    item_id = eng.db.create_item(status="active", name="x", search_query="x")
+    eng.db.add_listing(item_id, "ebay", listing_id="m", title="maybe", price=1, currency="USD")
+    eng.db.run("UPDATE listings SET verdict = 'maybe'")
+    ny = ZoneInfo("America/New_York")
+    early = datetime(2026, 11, 6, 8, 0, tzinfo=ny).timestamp()
+    nine = datetime(2026, 11, 6, 9, 5, tzinfo=ny).timestamp()
+    assert eng.maybe_send_digest(early) is False
+    assert eng.maybe_send_digest(nine) is True and "1 possible match to look at" in sent[0]
+    assert eng.maybe_send_digest(nine + 3600) is False           # once a day
+
+
+def test_health_alerts_after_three_failures(tmp_path):
+    from wishlist_radar.health import Health
+    eng = make_engine(tmp_path, {})
+    alerts = []
+    h = Health(eng.db, alert=lambda t, m: alerts.append(t))
+    for _ in range(4):
+        h.fail("eBay", "403 forbidden")
+    assert alerts == ["⚠️ eBay keeps failing"]
+    h.ok("eBay")
+    assert h.problems() == []
+    for _ in range(3):
+        h.fail("eBay", "again")
+    assert len(alerts) == 2
+
+
+def test_backup_and_pruning(tmp_path):
+    eng = make_engine(tmp_path, {})
+    folder = tmp_path / "backups"
+    folder.mkdir()
+    for d in range(1, 10):
+        (folder / f"wishlist-2026-01-{d:02d}.db").write_bytes(b"x")
+    path = eng.backup()
+    import sqlite3
+    assert sqlite3.connect(path).execute("SELECT COUNT(*) FROM items").fetchone() == (0,)
+    assert len(eng.backups()) == 7 and eng.backups()[0] == path
+
+
+def test_yahoo_japan_parsing():
+    from wishlist_radar.sources.yahoojp import parse_results
+    page = ('<a class="Product__imageLink" href="https://auctions.yahoo.co.jp/jp/auction/x1234" '
+            'data-auction-id="x1234" data-auction-title="キャピタル デニムジャケット" '
+            'data-auction-price="12,800" data-auction-img="https://img/x.jpg">'
+            '<a href="#" data-auction-id="x1234" data-auction-title="dup">')
+    [l] = parse_results(page)
+    assert (l.listing_id, l.price, l.currency) == ("x1234", 12800.0, "JPY")
+    assert l.url == "https://buyee.jp/item/yahoo/auction/x1234" and "デニム" in l.title
+
+
+def test_new_pages_render(client):
+    c, eng = client
+    c.post("/login", data={"password": "pw"})
+    item_id = eng.db.create_item(status="active", name="Box Shirt", search_query="q", sources="stores,yahoojp")
+    lid = eng.db.add_listing(item_id, "stores", listing_id="a", title="Box Shirt", price=180, currency="USD",
+                             url="https://shop/products/a")
+    eng.db.run("UPDATE listings SET verdict='match', prev_price=260, is_deal=1")
+    eng.db.run("INSERT INTO events (item_id, listing_id, kind, old_value, new_value, created_at) "
+               "VALUES (?,?,?,?,?,?)", item_id, lid, "price_drop", "260", "180", time.time())
+    eng.health.fail("eBay", "No eBay keys yet")
+    page = c.get(f"/items/{item_id}").text
+    assert "Price drop" in page and "Price &amp; stock changes" in page and "👍" in page
+    assert "need" in c.get("/").text and "attention" in c.get("/").text
+    st = c.get("/status")
+    assert st.status_code == 200 and "No eBay keys yet" in st.text
+    assert c.get("/settings").status_code == 200 and c.get("/sizes").status_code == 200
+    r = c.post("/settings/backup")
+    assert r.status_code == 200 and len(r.content) > 0

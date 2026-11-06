@@ -84,6 +84,25 @@ CREATE TABLE IF NOT EXISTS posts (
     created_at REAL NOT NULL
 );
 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    item_id INTEGER NOT NULL REFERENCES items(id) ON DELETE CASCADE,
+    listing_id INTEGER REFERENCES listings(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL,                            -- price_drop | price_up | sold | restock | size_gone
+    old_value TEXT DEFAULT '',
+    new_value TEXT DEFAULT '',
+    created_at REAL NOT NULL,
+    notified INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS events_item ON events(item_id, created_at);
+CREATE TABLE IF NOT EXISTS health (
+    name TEXT PRIMARY KEY,                         -- e.g. "eBay", "Claude", "Sales: Chicmi"
+    last_ok_at REAL,
+    last_error TEXT DEFAULT '',
+    last_error_at REAL,
+    failures INTEGER NOT NULL DEFAULT 0,           -- consecutive
+    alerted INTEGER NOT NULL DEFAULT 0
+);
 CREATE TABLE IF NOT EXISTS sale_sources (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL,
@@ -133,6 +152,14 @@ MIGRATIONS = [
     "ALTER TABLE listings ADD COLUMN merchant TEXT DEFAULT ''",
     "ALTER TABLE items ADD COLUMN post_id INTEGER",
     "ALTER TABLE posts ADD COLUMN note TEXT DEFAULT ''",
+    "ALTER TABLE listings ADD COLUMN last_checked_at REAL",
+    "ALTER TABLE listings ADD COLUMN availability TEXT DEFAULT 'available'",
+    "ALTER TABLE listings ADD COLUMN first_price REAL",
+    "ALTER TABLE listings ADD COLUMN prev_price REAL",
+    "ALTER TABLE listings ADD COLUMN feedback TEXT DEFAULT ''",
+    "ALTER TABLE listings ADD COLUMN fit TEXT DEFAULT ''",
+    "ALTER TABLE listings ADD COLUMN fit_note TEXT DEFAULT ''",
+    "ALTER TABLE items ADD COLUMN search_query_jp TEXT DEFAULT ''",
 ]
 
 DEFAULT_SETTINGS: dict[str, Any] = {
@@ -143,6 +170,19 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "size_shoes": "",
     "size_brands": "",          # one per line: "Our Legacy: 48"
     "size_notes": "",           # free text: fit preferences
+    "meas_unit": "in",          # in | cm
+    "meas_chest": "",           # pit to pit, garment laid flat
+    "meas_length": "",          # back length, top of collar to hem
+    "meas_shoulder": "",
+    "meas_sleeve": "",
+    "meas_waist": "",           # trousers, laid flat (half the waist)
+    "meas_inseam": "",
+    "digest_enabled": True,
+    "digest_hour": 9,
+    "timezone": "America/New_York",
+    "last_digest_at": 0,
+    "last_backup_at": 0,
+    "app_url": "",              # remembered from your visits, for links in notifications
     "sale_brands": "",          # brands you follow for sample sales, one per line
     "sales_menswear_only": True,
 
@@ -258,7 +298,8 @@ class DB:
         return {r["listing_id"] for r in rows}
 
     def add_listing(self, item_id: int, source: str, **f) -> int:
-        f.update(item_id=item_id, source=source, first_seen_at=time.time())
+        f.update(item_id=item_id, source=source, first_seen_at=time.time(),
+                 last_checked_at=time.time(), first_price=f.get("price"))
         cols = ", ".join(f)
         marks = ", ".join("?" for _ in f)
         return self.run(f"INSERT OR IGNORE INTO listings ({cols}) VALUES ({marks})", *f.values())

@@ -11,10 +11,11 @@ from datetime import datetime
 
 import httpx
 
-from . import Listing, SourceStatus
+from . import Listing, ListingUpdate, SourceStatus
 
 TOKEN_URL = "https://api.ebay.com/identity/v1/oauth2/token"
 SEARCH_URL = "https://api.ebay.com/buy/browse/v1/item_summary/search"
+ITEM_URL = "https://api.ebay.com/buy/browse/v1/item/{item_id}"
 SCOPE = "https://api.ebay.com/oauth/api_scope"
 
 MARKETPLACES = {
@@ -119,3 +120,42 @@ class EbaySource:
             raise RuntimeError(self._last_error)
         self._last_error = ""
         return parse_results(resp.json())
+
+    # ---- seen-before listings ------------------------------------------------
+    def _get_item(self, item_id: str) -> dict | None:
+        from urllib.parse import quote
+
+        resp = httpx.get(
+            ITEM_URL.format(item_id=quote(item_id, safe="")),
+            headers={"Authorization": f"Bearer {self._access_token()}",
+                     "X-EBAY-C-MARKETPLACE-ID": self.marketplace},
+            timeout=30,
+        )
+        if resp.status_code == 404:
+            return None
+        if resp.status_code != 200:
+            raise RuntimeError(f"eBay item lookup failed ({resp.status_code})")
+        return resp.json()
+
+    def refresh(self, listing: dict) -> ListingUpdate | None:
+        body = self._get_item(listing["listing_id"])
+        if body is None:
+            return ListingUpdate(available=False)
+        price = (body.get("price") or body.get("currentBidPrice") or {}).get("value")
+        avail = (body.get("estimatedAvailabilities") or [{}])[0].get("estimatedAvailabilityStatus")
+        return ListingUpdate(available=avail != "OUT_OF_STOCK",
+                             price=float(price) if price else None)
+
+    def details(self, listing: dict) -> str:
+        body = self._get_item(listing["listing_id"]) or {}
+        aspects = "; ".join(f"{a.get('name')}: {a.get('value')}" for a in body.get("localizedAspects") or [])
+        return "\n".join(x for x in (aspects, _strip_html(body.get("description", ""))) if x)[:6000]
+
+
+def _strip_html(text: str) -> str:
+    import html as _html
+    import re as _re
+
+    text = _re.sub(r"(?is)<(script|style)\b.*?</\1>", " ", text or "")
+    text = _re.sub(r"<[^>]+>", " ", text)
+    return _re.sub(r"\s+", " ", _html.unescape(text)).strip()

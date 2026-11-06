@@ -17,15 +17,18 @@
 {%- endmacro %}
 
 {% macro listing_card(l, item, deal=false) -%}
-<article class="listing {{ 'is-deal' if deal }}">
+<article class="listing {{ 'is-deal' if deal }} {{ 'is-sold' if l.availability == 'sold' }}">
   <a class="listing-img" href="{{ l.url }}" target="_blank" rel="noopener">
     {% if l.image_url %}<img src="{{ l.image_url }}" alt="" loading="lazy" referrerpolicy="no-referrer">{% endif %}
   </a>
   <div class="listing-body">
     <div class="listing-top">
       <span class="price">{{ l.price|money(l.currency) }}</span>
+      {% if l.prev_price and l.price and l.prev_price > l.price %}<span class="was">{{ l.prev_price|money(l.currency) }}</span><span class="badge badge-drop">Price drop</span>{% endif %}
       {% set conv = l.price|approx(l.currency, currency) %}{% if conv %}<span class="muted small">{{ conv }}</span>{% endif %}
+      {% if l.availability == 'sold' %}<span class="badge badge-muted">Sold</span>{% endif %}
       {% if deal %}<span class="badge badge-deal">Deal</span>{% endif %}
+      {% if l.below_pct %}<span class="badge badge-ok">{{ l.below_pct }}% below typical</span>{% endif %}
       {% if item.max_price and l.price and l.price > item.max_price and l.currency == currency %}
         <span class="badge badge-muted">over budget</span>
       {% endif %}
@@ -36,6 +39,9 @@
     <div class="meta">
       {% if l.size_text %}<span>{{ l.size_text if l.size_text.startswith(('In stock', 'Sold out')) else 'Size ' ~ l.size_text }}</span>{% endif %}
       {% if l.size_ok == 'yes' %}<span class="ok">✓ your size</span>{% elif l.size_ok == 'no' %}<span class="warn">✗ wrong size</span>{% endif %}
+      {% if l.fit == 'good' %}<span class="ok" title="{{ l.fit_note }}">✓ fits: {{ l.fit_note }}</span>
+      {% elif l.fit == 'close' %}<span title="{{ l.fit_note }}">≈ close fit: {{ l.fit_note }}</span>
+      {% elif l.fit == 'bad' %}<span class="warn" title="{{ l.fit_note }}">✗ won't fit: {{ l.fit_note }}</span>{% endif %}
       {% if l.condition %}<span>{{ l.condition }}</span>{% endif %}
       <span>found {{ when(l.first_seen_at) }}</span>
     </div>
@@ -43,10 +49,13 @@
   </div>
   <div class="listing-actions">
     <a class="btn btn-sm" href="{{ l.url }}" target="_blank" rel="noopener">Open</a>
-    {% if l.verdict != 'match' %}
-      <form method="post" action="/listings/{{ l.id }}/promote"><button class="btn btn-sm btn-ghost" title="This is the item">It's a match</button></form>
-    {% endif %}
-    <form method="post" action="/listings/{{ l.id }}/dismiss"><button class="btn btn-sm btn-ghost" title="Hide this listing">Hide</button></form>
+    <div class="fb">
+      <form method="post" action="/listings/{{ l.id }}/feedback"><input type="hidden" name="value" value="up">
+        <button class="btn btn-sm btn-ghost {{ 'on' if l.feedback == 'up' }}" title="Right item: teach the matcher" aria-label="Right item">👍</button></form>
+      <form method="post" action="/listings/{{ l.id }}/feedback"><input type="hidden" name="value" value="down">
+        <button class="btn btn-sm btn-ghost" title="Wrong item: hide it and teach the matcher" aria-label="Wrong item">👎</button></form>
+    </div>
+    <form method="post" action="/listings/{{ l.id }}/dismiss"><button class="btn btn-sm btn-ghost" title="Right item, just not interested">Hide</button></form>
   </div>
 </article>
 {%- endmacro %}

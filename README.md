@@ -1,6 +1,6 @@
 # wishlist-radar
 
-Share a post with clothes or products in it, and wishlist-radar works out what the items are,
+Share a post (or any product page) with clothes or products in it, and wishlist-radar works out what the items are,
 adds them to a wishlist, and keeps searching resale marketplaces for them. When a listing turns up
 that's the right item, in your size and under your budget, you get a push notification.
 
@@ -51,6 +51,34 @@ APP_PASSWORD=demo INGEST_TOKEN=demo DATA_DIR=./demo-data SCHEDULER=off uvicorn w
 
 Then in the app's **Settings** page: your sizes, eBay country, and an ntfy topic for notifications
 (install the free **ntfy** app on your phone and subscribe to the same topic name).
+
+## Tracking, learning and prices
+
+- **Price drops, restocks, sold:** matched listings are re-checked every 6 hours (eBay, Grailed
+  and Shopify shops). A price drop, or your size coming back in stock, sends a notification and
+  can turn a match into a deal. Sold listings move to a "Sold" section, which is useful for
+  seeing what things actually go for. Every change is listed on the item page.
+- **👍 / 👎:** tell it when a listing is or isn't the item. 👎 hides the listing, and both are
+  shown to Claude when it judges new listings for that item, so results improve as you use it.
+- **Typical price:** each item shows the typical price, range and number of matches priced
+  (converted to your currency). Listings 10%+ under typical are flagged, and items without a
+  budget get a suggested one.
+- **Measurements:** add yours on the Sizes page (pit to pit, length, waist, inseam…). Matches on
+  resale sites are checked against the seller's listed measurements, and ones that won't fit
+  don't count as deals.
+
+## Notifications
+
+Deals, price drops, restocks and sample sales for your brands are pushed straight away. Everything
+else (possible matches, other changes, new sales, failing sources) comes in one **daily
+summary** at a time you choose (Settings).
+
+## Status & backups
+
+The **Status** page (gear icon) shows whether each part works: Claude, each marketplace, each
+sale calendar, notifications, exchange rates, speech-to-text. "Test everything" tries them all.
+Anything failing 3 times in a row sends a notification, and a red dot shows on the gear icon.
+The database is backed up daily on the server (last 7 kept), and Settings has a download button.
 
 ## Sample sales
 
@@ -109,7 +137,11 @@ Tick **Shops** on an item to search them all, or use "Yes, use them everywhere" 
   with infrequent checks. If key discovery stops working, find the `x-algolia-application-id` and
   `x-algolia-api-key` headers in your browser's network tab on grailed.com/shop, and set
   `GRAILED_ALGOLIA_APP_ID` / `GRAILED_ALGOLIA_API_KEY`.
-- Depop, Vinted and others aren't supported. They actively block automated access.
+- **Yahoo! Japan Auctions (experimental, off by default):** the main source for Japanese brands.
+  Reads the public search page with a Japanese query Claude writes for each item, and links open
+  on **Buyee**, a proxy service that buys and ships for you. Unofficial, so it may break or be
+  against Yahoo's terms. Keep checks infrequent.
+- Depop, Vinted and Mercari aren't supported. They actively block automated access.
 
 Each marketplace is a small module in `wishlist_radar/sources/` with a single `search()` method,
 so adding one is self-contained.

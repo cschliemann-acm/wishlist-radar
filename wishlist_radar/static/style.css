@@ -416,3 +416,20 @@ button[data-busy-label] { min-width: 120px; }
   .source-row .grow { flex-basis: 100%; order: 10; }
   .add-btn { flex: none; }
 }
+
+/* ---------- v11: tracking, feedback, status ---------- */
+.was { color: var(--muted); text-decoration: line-through; font-size: 14px; }
+.badge-drop { background: #b91c1c; color: #fff; }
+.listing.is-sold { opacity: 0.6; }
+.fb { display: flex; gap: 2px; }
+.fb .btn { padding: 4px 8px; }
+.fb .btn.on { background: var(--accent-soft); }
+.inline-form { display: inline-block; margin-left: 6px; vertical-align: middle; }
+.nudge-warn { border-color: color-mix(in srgb, var(--bad) 45%, var(--line)); background: color-mix(in srgb, var(--bad) 8%, var(--surface)); }
+.nudge-warn strong { color: var(--bad); }
+.icon-link { position: relative; }
+.alert-dot { position: absolute; top: 4px; right: 4px; width: 8px; height: 8px; border-radius: 50%; background: var(--bad); }
+.status-name { min-width: 150px; font-size: 14px; }
+.backup-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+td.err-free { white-space: normal; }
+@media (max-width: 640px) { .status-name { min-width: 0; } }
