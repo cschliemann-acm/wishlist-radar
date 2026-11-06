@@ -379,3 +379,74 @@ def japanese_query(client: anthropic.Anthropic, model: str, item: dict) -> str:
         output_config={"effort": "low"},
     )
     return _first_text(response).strip().strip('"').splitlines()[0][:80]
+
+
+# --------------------------------------------------------------------------- products from pages
+class PageProduct(BaseModel):
+    title: str
+    price: float
+    currency: str
+    was_price: float
+    url: str
+    image_url: str
+    sizes: str
+    sold_out: bool
+
+
+class PageProducts(BaseModel):
+    products: list[PageProduct]
+
+
+PRODUCTS_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "products": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string"},
+                    "price": {"type": "number"},
+                    "currency": {"type": "string"},
+                    "was_price": {"type": "number"},
+                    "url": {"type": "string"},
+                    "image_url": {"type": "string"},
+                    "sizes": {"type": "string"},
+                    "sold_out": {"type": "boolean"},
+                },
+                "required": ["title", "price", "currency", "was_price", "url", "image_url",
+                             "sizes", "sold_out"],
+                "additionalProperties": False,
+            },
+        }
+    },
+    "required": ["products"],
+    "additionalProperties": False,
+}
+
+PRODUCTS_SYSTEM = """You read a shop's search-results page, or a saved-search alert email from a \
+marketplace, and list the products in it.
+
+For each product listed (not navigation, ads, "you may also like" carousels or footer links):
+- title: brand + product name as shown (include the brand if it's shown separately).
+- price: the current price as a number (0 if not shown). currency: ISO code (USD, GBP, EUR, JPY…; \
+infer from symbols and the site).
+- was_price: the original price if it's marked down, else 0.
+- url: the product's own link (links appear in brackets after their text). Must be a full URL.
+- image_url: the product photo ([image: …] next to it), or "".
+- sizes: sizes shown as available, or "".
+- sold_out: true if marked sold out.
+Don't invent products or prices. Return an empty list if there are none."""
+
+
+def extract_products(client: anthropic.Anthropic, model: str, page_text: str, site: str,
+                     context: str = "") -> list[PageProduct]:
+    response = client.messages.create(
+        model=model,
+        max_tokens=16000,
+        system=PRODUCTS_SYSTEM,
+        messages=[{"role": "user", "content":
+                   f"Source: {site}{f' ({context})' if context else ''}\n\n<page>\n{page_text}\n</page>"}],
+        output_config={"effort": "low", "format": {"type": "json_schema", "schema": PRODUCTS_SCHEMA}},
+    )
+    return PageProducts.model_validate(json.loads(_first_text(response))).products

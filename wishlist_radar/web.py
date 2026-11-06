@@ -9,6 +9,7 @@ import logging
 import re
 import secrets
 import tempfile
+import threading
 import time
 from contextlib import asynccontextmanager
 from functools import lru_cache
@@ -642,12 +643,22 @@ def shops_page(request: Request):
     engine = get_engine()
     stores = engine.db.stores()
     settings = engine.db.settings()
-    counts = {k: sum(1 for s in stores if s["kind"] == k) for k in ("shopify", "feed", "unsupported", "pending")}
+    counts = {k: sum(1 for s in stores if s["kind"] == k)
+              for k in ("shopify", "feed", "browser", "unsupported", "pending")}
+    from .browser import available as browser_available
+    from .sources.shops import default_search_url
+    for s in stores:
+        s["suggested_search_url"] = s["search_url"] or default_search_url(s["url"])
     tracked = engine.db.items(("active", "paused", "draft"))
     have = {host_key(s["url"]) for s in stores}
     suggestions = [{"name": n, "url": u, "group": g} for n, u, g in SUGGESTED_SHOPS
                    if host_key(u) not in have]
+    c = engine.c
     return render(request, "shops.html", stores=stores, counts=counts, suggestions=suggestions,
+                  browser_ok=browser_available(),
+                  email_on=bool(c.alerts_imap_user and c.alerts_imap_password), email_user=c.alerts_imap_user,
+                  emails=engine.db.all("SELECT * FROM alert_emails ORDER BY created_at DESC LIMIT 15"),
+                  last_email_check=engine.db.settings().get("last_email_check_at"),
                   default_on="stores" in settings["default_sources"].split(","),
                   missing=sum(1 for i in tracked if "stores" not in i["sources"].split(",")))
 
@@ -689,6 +700,27 @@ def shops_use_everywhere(request: Request):
     if "stores" not in defaults:
         db.save_settings({"default_sources": ",".join(defaults + ["stores"])})
     flash(request, "Your shops are now searched for every item, including new ones")
+    return back("/shops")
+
+
+@app.post("/shops/{store_id}/browser")
+def shops_use_browser(request: Request, store_id: int, search_url: str = Form("")):
+    try:
+        get_engine().use_browser_for(store_id, search_url)
+    except KeyError:
+        raise HTTPException(404)
+    except ValueError as e:
+        flash(request, str(e), "error")
+        return back("/shops")
+    flash(request, "This shop will be searched with a real browser from the next check")
+    return back("/shops")
+
+
+@app.post("/shops/emails/check")
+def shops_check_emails(request: Request):
+    engine = get_engine()
+    threading.Thread(target=engine.check_alert_emails, kwargs={"force": True}, daemon=True).start()
+    flash(request, "Checking the alerts mailbox now. Reload in a minute.")
     return back("/shops")
 
 

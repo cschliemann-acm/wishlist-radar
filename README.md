@@ -126,6 +126,18 @@ The page also offers a ready-made list of shops (yours plus similar ones) to add
 Prices in other currencies are converted with daily exchange rates when comparing with your
 budget, so a £150 listing counts against a $200 budget.
 
+**Shops that block simple searches** can be searched with a **real browser** instead: open
+"Search it with a real browser instead" under the shop, check the search address (the site's
+results page with `{q}` where the search words go), and save. A headless Chrome on the server
+loads the page like a normal visit and Claude Haiku reads the products off it, at most every
+6 hours per item per shop. Sites with strong bot protection can still block a cloud server.
+
+For those, **saved-search alert emails** are the fallback that always works: set
+`ALERTS_IMAP_USER` / `ALERTS_IMAP_PASSWORD` for a dedicated mailbox (a Gmail with an app
+password). Then either save searches with email alerts on Depop, Vinted, Grailed, eBay or SSENSE
+using that address, or forward their alert emails to it with a filter. The mailbox is read every
+10 minutes, and listings in the emails are matched against your wishlist like any other search.
+
 Tick **Shops** on an item to search them all, or use "Yes, use them everywhere" on the Shops page.
 
 ## Marketplaces

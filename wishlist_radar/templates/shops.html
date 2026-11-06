@@ -45,7 +45,7 @@
   <div class="section-head row">
     <div>
       <h2>Your shops <span class="count">{{ stores|length }}</span></h2>
-      <p class="muted small">{{ counts.shopify }} searchable store{{ 's' if counts.shopify != 1 }} · {{ counts.feed }} news site{{ 's' if counts.feed != 1 }} · {{ counts.unsupported }} not supported{% if counts.pending %} · {{ counts.pending }} checking…{% endif %}</p>
+      <p class="muted small">{{ counts.shopify }} searchable store{{ 's' if counts.shopify != 1 }} · {{ counts.feed }} news site{{ 's' if counts.feed != 1 }} · {% if counts.browser %}{{ counts.browser }} via browser · {% endif %}{{ counts.unsupported }} not supported{% if counts.pending %} · {{ counts.pending }} checking…{% endif %}</p>
     </div>
     <form method="post" action="/shops/redetect"><button class="btn btn-sm">Re-check all</button></form>
   </div>
@@ -60,14 +60,25 @@
       <div class="shop-kind">
         {% if s.kind == 'shopify' %}<span class="badge badge-ok">Searchable</span>
         {% elif s.kind == 'feed' %}<span class="badge badge-info">News feed</span>
+        {% elif s.kind == 'browser' %}<span class="badge badge-ok">Browser</span>
         {% elif s.kind == 'pending' %}<span class="badge badge-muted"><span class="pulse"></span> Checking</span>
         {% else %}<span class="badge badge-warn">Not supported</span>{% endif %}
       </div>
       <div class="shop-status small muted">
         {{ s.status }}{% if s.last_ok_at %} · last searched {{ m.when(s.last_ok_at) }}{% endif %}
+        {% if s.kind in ('unsupported', 'browser') and browser_ok %}
+        <details class="browser-setup" {{ 'open' if s.kind == 'browser' and 'not searched' in s.status }}>
+          <summary>{{ 'Search address' if s.kind == 'browser' else 'Search it with a real browser instead' }}</summary>
+          <form method="post" action="/shops/{{ s.id }}/browser" class="browser-form">
+            <input name="search_url" value="{{ s.suggested_search_url }}" aria-label="Search address for {{ s.name }}">
+            <button class="btn btn-sm {{ 'btn-primary' if s.kind != 'browser' }}">{{ 'Save' if s.kind == 'browser' else 'Use a browser' }}</button>
+          </form>
+          <span class="hint">Search for something on {{ s.name }} and paste the address of the results page, with your search words replaced by <code>{q}</code>.</span>
+        </details>
+        {% endif %}
       </div>
       <div class="shop-actions">
-        {% if s.kind in ('shopify', 'feed') %}
+        {% if s.kind in ('shopify', 'feed', 'browser') %}
         <form method="post" action="/shops/{{ s.id }}/toggle"><button class="btn btn-sm {{ '' if s.enabled else 'btn-ghost' }}">{{ 'On' if s.enabled else 'Off' }}</button></form>
         {% endif %}
         <form method="post" action="/shops/{{ s.id }}/delete"><button class="btn btn-sm btn-ghost" aria-label="Remove {{ s.name }}" title="Remove">✕</button></form>
@@ -76,8 +87,41 @@
     {% endfor %}
   </div>
   {% if counts.unsupported %}
-  <p class="muted small">“Not supported” usually means a big retailer with its own website that blocks automated searches (SSENSE, Huckberry, BSTN and similar). Their items often show up on eBay and Grailed anyway, and their deals get covered by news sites like Heddels.</p>
+  <p class="muted small">“Not supported” shops can be searched with a real browser instead (open “Search it with a real browser instead” under each one). Sites with strong bot protection may block that too. For those, use saved-search alert emails below.</p>
   {% endif %}
 </section>
 {% endif %}
+
+<section class="card" id="alerts">
+  <h2>Saved-search alerts by email</h2>
+  <p class="muted small">For sites that block automated searches (Depop, Vinted, SSENSE, END.…): use their own saved searches and email alerts. Alerts sent to the mailbox below are read every {{ 10 }} minutes, Claude pulls out the listings, and they're matched against your wishlist like any other search.</p>
+  {% if email_on %}
+    <div class="source-row"><span class="dot dot-ok"></span><strong>{{ email_user }}</strong>
+      <span class="small muted grow">checked {{ m.when(last_email_check) }}</span>
+      <form method="post" action="/shops/emails/check"><button class="btn btn-sm">Check now</button></form></div>
+    {% if emails %}
+    <div class="table-wrap"><table class="checks">
+      <thead><tr><th>When</th><th>From</th><th>Subject</th><th class="num">Listings</th><th class="num">Matched</th><th></th></tr></thead>
+      <tbody>{% for e in emails %}
+        <tr class="{{ 'row-error' if e.error }}"><td>{{ m.when(e.created_at) }}</td><td>{{ e.sender }}</td><td class="err-free">{{ e.subject }}</td>
+          <td class="num">{{ e.products }}</td><td class="num {{ 'deal-num' if e.matched }}">{{ e.matched }}</td><td class="err">{{ e.error }}</td></tr>
+      {% endfor %}</tbody>
+    </table></div>
+    {% else %}<p class="empty-line">No alert emails yet.</p>{% endif %}
+    <h3>Set up alerts</h3>
+  {% else %}
+    <h3>Setup (about 10 minutes)</h3>
+    <ol class="steps small">
+      <li>Create a new Gmail address just for this (e.g. <em>yourname.radar@gmail.com</em>).</li>
+      <li>On that account, turn on 2-Step Verification, then create an <strong>app password</strong> (Google Account → Security → App passwords).</li>
+      <li>In Railway, add the variables <code>ALERTS_IMAP_USER</code> (the address) and <code>ALERTS_IMAP_PASSWORD</code> (the app password).</li>
+    </ol>
+    <h3>Then</h3>
+  {% endif %}
+  <ul class="steps small">
+    <li><strong>Depop, Vinted, Grailed, eBay:</strong> save a search for each item with alerts on, using the radar address as the account email, or…</li>
+    <li><strong>…forward from your own email:</strong> in Gmail, make a filter for alert emails (e.g. <em>from:(depop.com OR vinted.com OR ssense.com)</em>) that forwards them to the radar address.</li>
+    <li><strong>SSENSE, END., Mr Porter:</strong> add pieces to your wishlist there with sale and back-in-stock emails on, and forward those.</li>
+  </ul>
+</section>
 {% endblock %}

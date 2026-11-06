@@ -687,3 +687,102 @@ def test_new_pages_render(client):
     assert c.get("/settings").status_code == 200 and c.get("/sizes").status_code == 200
     r = c.post("/settings/backup")
     assert r.status_code == 200 and len(r.content) > 0
+
+
+# ---------------------------------------------------------------- browser shops & alert emails
+def test_real_browser_renders_javascript_page(tmp_path):
+    """Starts a local page whose products only appear via JavaScript, and renders it."""
+    import http.server
+    import threading
+    from wishlist_radar import browser
+
+    if not browser.available():
+        pytest.skip("playwright not installed")
+    (tmp_path / "index.html").write_text(
+        "<html><body><div id=r></div><script>document.getElementById('r').innerHTML="
+        "'<a href=\"/p/box-shirt\"><img src=\"/i.jpg\">Our Legacy Box Shirt</a> $180';</script></body></html>")
+    handler = lambda *a, **k: http.server.SimpleHTTPRequestHandler(*a, directory=str(tmp_path), **k)  # noqa: E731
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        page = browser.render(f"http://127.0.0.1:{server.server_port}/index.html", timeout_s=20)
+    except Exception as e:  # no usable Chromium in this environment
+        pytest.skip(f"browser unavailable: {e}")
+    finally:
+        server.shutdown()
+    from wishlist_radar.sales import html_to_text
+    text = html_to_text(page.html, page.url, images=True)
+    assert "Our Legacy Box Shirt" in text and "/p/box-shirt" in text and "[image:" in text
+
+
+def test_browser_shop_search(tmp_path):
+    from types import SimpleNamespace
+    from wishlist_radar.sources.shops import ShopsSource
+
+    stores = [{"id": 1, "name": "SSENSE", "url": "https://www.ssense.com", "kind": "browser", "enabled": 1,
+               "search_url": "https://www.ssense.com/en-us/men?q={q}", "currency": "USD"}]
+    rendered, reports = [], []
+    src = ShopsSource(lambda: stores, report=lambda sid, f: reports.append(f),
+                      extract=lambda text, site, ctx: [ai.PageProduct(
+                          title="Our Legacy Box Shirt", price=180, currency="USD", was_price=260,
+                          url="https://www.ssense.com/en-us/men/product/our-legacy/box-shirt/123",
+                          image_url="https://img.ssense.com/x.jpg", sizes="48, 50", sold_out=False)],
+                      render=lambda url: rendered.append(url) or SimpleNamespace(html="<p>x</p>", url=url))
+    [l] = src.search("our legacy box shirt", max_price=None)
+    assert rendered == ["https://www.ssense.com/en-us/men?q=our+legacy+box+shirt"]
+    assert l.listing_id == "ssense.com:/en-us/men/product/our-legacy/box-shirt/123"
+    assert (l.price, l.size_text, l.condition, l.merchant) == (180, "In stock: 48, 50", "On sale (was 260)", "SSENSE")
+    assert any("1 products" in r.get("status", "") for r in reports)
+    assert src.search("our legacy box shirt", max_price=None) == []   # throttled: not re-rendered
+    assert len(rendered) == 1
+
+
+def test_use_browser_for_validates_template(tmp_path):
+    eng = make_engine(tmp_path, {})
+    sid = eng.db.run("INSERT INTO stores (name, url, kind, created_at) VALUES ('SSENSE', 'https://www.ssense.com', "
+                     "'unsupported', ?)", time.time())
+    with pytest.raises(ValueError):
+        eng.use_browser_for(sid, "https://www.ssense.com/search")
+    eng.use_browser_for(sid)
+    s = eng.db.one("SELECT * FROM stores WHERE id = ?", sid)
+    assert s["kind"] == "browser" and s["search_url"] == "https://www.ssense.com/en-us/men?q={q}"
+
+
+def test_alert_email_parsed_and_matched(tmp_path, monkeypatch):
+    from email.message import EmailMessage
+    from wishlist_radar import emailbox
+
+    msg = EmailMessage()
+    msg["From"] = "Depop <noreply@depop.com>"
+    msg["Subject"] = "New items for your saved search: our legacy"
+    msg.set_content("plain version")
+    msg.add_alternative('<a href="https://www.depop.com/products/x-ol-box/">Our Legacy Box Shirt 48</a> $120',
+                        subtype="html")
+    parsed = emailbox.parse("7", msg.as_bytes())
+    assert parsed.sender_name == "Depop" and "saved search" in parsed.subject and "depop.com/products" in parsed.html
+
+    eng = make_engine(tmp_path, {})
+    item_id = eng.db.create_item(status="active", name="Box Shirt", brand="Our Legacy", search_query="our legacy box shirt")
+    other = eng.db.create_item(status="active", name="Air Max 1", brand="Nike", search_query="nike air max 1")
+    monkeypatch.setattr(ai, "extract_products", lambda client, model, text, site, ctx: [ai.PageProduct(
+        title="Our Legacy Box Shirt 48", price=120, currency="USD", was_price=0,
+        url="https://www.depop.com/products/x-ol-box/", image_url="", sizes="", sold_out=False)])
+    _match_all(monkeypatch)
+    assert eng.process_alert_email(parsed) == 1
+    l = eng.db.one("SELECT * FROM listings")
+    assert (l["item_id"], l["source"], l["merchant"], l["is_deal"]) == (item_id, "email", "Depop alert", 1)
+    assert eng.db.one("SELECT COUNT(*) n FROM listings WHERE item_id = ?", other)["n"] == 0
+    log = eng.db.one("SELECT * FROM alert_emails")
+    assert (log["products"], log["matched"]) == (1, 1)
+    assert eng.process_alert_email(parsed) == 0                 # same listing isn't added twice
+
+
+def test_shops_page_shows_browser_and_email_setup(client):
+    c, eng = client
+    c.post("/login", data={"password": "pw"})
+    eng.db.run("INSERT INTO stores (name, url, kind, status, created_at) VALUES ('SSENSE', 'https://www.ssense.com', "
+               "'unsupported', 'blocked', ?)", time.time())
+    page = c.get("/shops").text
+    assert "Saved-search alerts by email" in page and "ALERTS_IMAP_USER" in page
+    if "Search it with a real browser instead" in page:
+        assert "ssense.com/en-us/men?q={q}" in page

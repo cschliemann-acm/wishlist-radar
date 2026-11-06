@@ -31,9 +31,18 @@ HEADERS = {
 }
 
 
-def html_to_text(page: str, base_url: str) -> str:
-    """Readable text with link targets kept, e.g. 'Our Legacy sample sale (https://…)'."""
+def html_to_text(page: str, base_url: str, images: bool = False, limit: int = MAX_PAGE_CHARS) -> str:
+    """Readable text with link targets kept, e.g. 'Our Legacy sample sale (https://…)'.
+    With images=True, product photos are kept as [image: url] too."""
     page = re.sub(r"(?is)<(script|style|noscript|svg|head)\b.*?</\1>", " ", page)
+    if images:
+        def img(m: re.Match) -> str:
+            tag = m.group(0)
+            src = re.search(r'(?:data-src|src)=["\']([^"\']+)["\']', tag, re.I)
+            if not src or src.group(1).startswith("data:"):
+                return " "
+            return f" [image: {urljoin(base_url, html.unescape(src.group(1)))}] "
+        page = re.sub(r"(?is)<img\b[^>]*>", img, page)
 
     def link(m: re.Match) -> str:
         href, text = m.group(1), re.sub(r"<[^>]+>", " ", m.group(2))
@@ -48,7 +57,7 @@ def html_to_text(page: str, base_url: str) -> str:
     page = html.unescape(page)
     page = re.sub(r"[ \t\r\f\v]+", " ", page)
     page = re.sub(r"\n\s*\n+", "\n", page)
-    return page.strip()[:MAX_PAGE_CHARS]
+    return page.strip()[:limit]
 
 
 def fetch_page_text(url: str) -> str:

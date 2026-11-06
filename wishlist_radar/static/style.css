@@ -433,3 +433,10 @@ button[data-busy-label] { min-width: 120px; }
 .backup-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 td.err-free { white-space: normal; }
 @media (max-width: 640px) { .status-name { min-width: 0; } }
+
+.browser-setup { margin-top: 6px; }
+.browser-setup summary { font-size: 13px; color: var(--accent); font-weight: 600; }
+.browser-setup summary::before { content: none; }
+.browser-form { display: flex; gap: 6px; margin: 6px 0 4px; }
+.browser-form input { font-size: 13px; padding: 6px 9px; }
+.steps { margin: 6px 0 0; padding-left: 20px; display: flex; flex-direction: column; gap: 6px; }

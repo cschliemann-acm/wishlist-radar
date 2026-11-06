@@ -14,14 +14,15 @@ from pathlib import Path
 
 import anthropic
 
-from . import ai, fx, instagram, media, notify, prices, sales
+from . import ai, emailbox, fx, instagram, media, notify, prices, sales
 from .config import Config
 from .db import DB
 from .health import Health
 from .sources import ListingUpdate, Source, SourceStatus
 from .sources.ebay import MARKETPLACES, EbaySource
 from .sources.grailed import GrailedSource
-from .sources.shops import ShopsSource, detect, host_key, normalize_url
+from .sources import Listing
+from .sources.shops import ShopsSource, default_search_url, detect, host_key, mentions, normalize_url
 from .sources.yahoojp import YahooJapanSource
 
 log = logging.getLogger("wishlist_radar")
@@ -36,7 +37,8 @@ RECHECK_PER_CHECK = 30
 FIT_CHECKS_PER_CHECK = 10
 PRICE_DROP_MIN = 0.03      # ignore changes under 3%
 BACKUP_KEEP = 7
-SOURCE_NAMES = {"ebay": "eBay", "stores": "Shops", "grailed": "Grailed", "yahoojp": "Yahoo! Japan"}
+SOURCE_NAMES = {"ebay": "eBay", "stores": "Shops", "grailed": "Grailed", "yahoojp": "Yahoo! Japan",
+                "email": "Email alerts"}
 SIZE_SETTING_BY_CATEGORY = {"tops": "size_tops", "outerwear": "size_outerwear",
                             "bottoms": "size_bottoms", "shoes": "size_shoes"}
 
@@ -61,7 +63,9 @@ class Engine:
         self._sources = sources
         self._ebay: EbaySource | None = None
         self._grailed = GrailedSource()
-        self._shops = ShopsSource(lambda: self.db.stores(), report=lambda sid, f: self.db.update_store(sid, **f))
+        self._shops = ShopsSource(
+            lambda: self.db.stores(), report=lambda sid, f: self.db.update_store(sid, **f),
+            extract=lambda text, site, ctx: ai.extract_products(self.client, self.c.match_model, text, site, ctx))
         self._yahoojp = YahooJapanSource()
         self._stop = threading.Event()
         self.health = Health(db, alert=self._push)
@@ -612,6 +616,77 @@ class Engine:
         threading.Thread(target=self.refresh_sales, args=(force,), daemon=True,
                          name="sales").start()
 
+    # ------------------------------------------------------------------ browser shops
+    def use_browser_for(self, store_id: int, search_url: str = "") -> None:
+        store = self.db.one("SELECT * FROM stores WHERE id = ?", store_id)
+        if not store:
+            raise KeyError(store_id)
+        url = search_url.strip() or store.get("search_url") or default_search_url(store["url"])
+        if "{q}" not in url:
+            raise ValueError("The search address needs {q} where the search words go")
+        self.db.update_store(store_id, kind="browser", search_url=url, enabled=1,
+                             status="Searched with a browser · not searched yet")
+
+    # ------------------------------------------------------------------ alert emails
+    def check_alert_emails(self, force: bool = False) -> int:
+        """Read new saved-search alert emails and match their listings to the wishlist."""
+        c = self.c
+        if not (c.alerts_imap_user and c.alerts_imap_password):
+            return 0
+        last = self.db.settings().get("last_email_check_at") or 0
+        if not force and time.time() - last < emailbox.POLL_MINUTES * 60:
+            return 0
+        self.db.save_settings({"last_email_check_at": time.time()})
+        try:
+            messages = emailbox.fetch_unread(c.alerts_imap_host, c.alerts_imap_user, c.alerts_imap_password)
+            self.health.ok("Email alerts")
+        except Exception as e:
+            self.health.fail("Email alerts", f"Couldn't read the mailbox: {e}")
+            return 0
+        for msg in messages:
+            self.process_alert_email(msg)
+        return len(messages)
+
+    def process_alert_email(self, msg: emailbox.AlertEmail) -> int:
+        """Returns how many listings were matched to wishlist items."""
+        matched = 0
+        products: list = []
+        error = ""
+        try:
+            text = (sales.html_to_text(msg.html, "", images=True, limit=30000) if msg.html
+                    else msg.text[:30000])
+            products = ai.extract_products(self.client, self.c.match_model, text, msg.sender_name,
+                                           f"alert email: {msg.subject}")
+            settings = self.db.settings()
+            for item in self.db.items(("active", "paused")):
+                known = self.db.known_listing_ids(item["id"], "email")
+                added = 0
+                for p in products:
+                    if not p.url.startswith("http") or p.url in known:
+                        continue
+                    cand = Listing(listing_id=p.url, title=p.title, price=p.price or None,
+                                   currency=p.currency, url=p.url)
+                    if not mentions(cand, item["search_query"], item.get("brand") or ""):
+                        continue
+                    self.db.add_listing(item["id"], "email", listing_id=p.url, title=p.title,
+                                        price=p.price or None, currency=p.currency, url=p.url,
+                                        image_url=p.image_url if p.image_url.startswith("http") else "",
+                                        size_text=f"In stock: {p.sizes}" if p.sizes else "",
+                                        condition=(f"On sale (was {p.was_price:.0f})"
+                                                   if p.was_price and p.was_price > p.price else ""),
+                                        merchant=f"{msg.sender_name} alert")
+                    added += 1
+                if added:
+                    m, _ = self._judge_pending(item, _EmailSource(), settings)
+                    matched += m
+        except Exception as e:
+            log.exception("alert email failed")
+            error = str(e)[:300]
+        self.db.run("INSERT INTO alert_emails (sender, subject, products, matched, error, created_at) "
+                    "VALUES (?,?,?,?,?,?)", msg.sender_name, msg.subject[:200], len(products), matched,
+                    error, time.time())
+        return matched
+
     # ------------------------------------------------------------------ daily digest
     def digest_text(self, since: float) -> tuple[str, str] | None:
         """(title, message) summarising what happened since `since`, or None if nothing did."""
@@ -750,8 +825,16 @@ class Engine:
                     self.check_item(item["id"])
                 self.refresh_sales()  # no-op unless a source is due (every few hours)
                 self.maybe_send_digest()
+                self.check_alert_emails()
                 if time.time() - (self.db.settings().get("last_backup_at") or 0) > 86400:
                     self.backup()
             except Exception:
                 log.exception("scheduler tick failed")
             self._stop.wait(TICK_SECONDS)
+
+
+class _EmailSource:
+    """Stand-in source for listings that arrived by email (judged like any other)."""
+    key = "email"
+    label = "Email alerts"
+    experimental = False

@@ -31,6 +31,17 @@ HEADERS = {
     "Accept": "application/json, text/html, application/rss+xml, application/xml;q=0.9, */*;q=0.8",
 }
 RESULTS_PER_SHOP = 8
+SEARCHABLE = ("shopify", "feed", "browser")
+BROWSER_MIN_HOURS = 6     # a real browser is slow: each shop+search at most this often
+# Search pages for sites that need a real browser ({q} = the search words). Anything else
+# defaults to <site>/search?q={q}; it can be edited on the Shops page.
+SEARCH_TEMPLATES = {
+    "ssense.com": "https://www.ssense.com/en-us/men?q={q}",
+}
+
+
+def default_search_url(base: str) -> str:
+    return SEARCH_TEMPLATES.get(host_key(base), f"{normalize_url(base)}/search?q={{q}}")
 
 # Offered on the Shops page for one-click adding. (name, address, group)
 SUGGESTED_SHOPS = [
@@ -256,15 +267,20 @@ class ShopsSource:
     experimental = False
 
     def __init__(self, get_stores: Callable[[], list[dict]],
-                 report: Callable[[int, dict], None] | None = None):
+                 report: Callable[[int, dict], None] | None = None,
+                 extract: Callable[[str, str, str], list] | None = None,
+                 render: Callable[[str], object] | None = None):
         self.get_stores = get_stores
         self.report = report or (lambda store_id, fields: None)
+        self.extract = extract          # (page_text, site, context) -> [ai.PageProduct]
+        self.render = render            # url -> browser.Rendered
         self.partial_errors: list[str] = []
         self._feed_cache: dict[str, tuple[float, str]] = {}
+        self._browser_last: dict[tuple[int, str], float] = {}
 
     def status(self) -> SourceStatus:
         stores = self.get_stores()
-        usable = [s for s in stores if s["enabled"] and s["kind"] in ("shopify", "feed")]
+        usable = [s for s in stores if s["enabled"] and s["kind"] in SEARCHABLE]
         if not stores:
             return SourceStatus(False, "No shops added yet. Add some on the Shops page")
         return SourceStatus(bool(usable), f"{len(usable)} of {len(stores)} shops searchable")
@@ -272,15 +288,22 @@ class ShopsSource:
     def search(self, query: str, *, max_price: float | None, limit: int = RESULTS_PER_SHOP,
                brand: str = "") -> list[Listing]:
         self.partial_errors = []
-        stores = [s for s in self.get_stores() if s["enabled"] and s["kind"] in ("shopify", "feed")]
+        stores = [s for s in self.get_stores() if s["enabled"] and s["kind"] in SEARCHABLE]
         if not stores:
             raise RuntimeError("No searchable shops. Add some on the Shops page")
+        now = time.time()
+        stores = [s for s in stores if s["kind"] != "browser"
+                  or now - self._browser_last.get((s["id"], query), 0) > BROWSER_MIN_HOURS * 3600]
         out: list[Listing] = []
         with _client() as client:
             for s in stores:
                 try:
-                    found = (self._search_shopify(client, s, query, limit) if s["kind"] == "shopify"
-                             else [l for l in self._read_feed(client, s) if mentions(l, query, brand)])
+                    if s["kind"] == "shopify":
+                        found = self._search_shopify(client, s, query, limit)
+                    elif s["kind"] == "browser":
+                        found = self._search_browser(s, query)
+                    else:
+                        found = [l for l in self._read_feed(client, s) if mentions(l, query, brand)]
                     for l in found:
                         l.merchant = s["name"]
                     out += found
@@ -289,8 +312,38 @@ class ShopsSource:
                     msg = f"{s['name']}: {e}"[:160]
                     self.partial_errors.append(msg)
                     self.report(s["id"], {"status": f"Last search failed: {e}"[:200]})
-        if len(self.partial_errors) == len(stores):
+        if stores and len(self.partial_errors) == len(stores):
             raise RuntimeError("All shops failed. " + "; ".join(self.partial_errors[:3]))
+        return out
+
+    def _search_browser(self, store: dict, query: str) -> list[Listing]:
+        """Open the shop's search page in a real browser and have Claude read the results."""
+        from urllib.parse import quote_plus
+
+        from ..browser import render as default_render
+        from ..sales import html_to_text
+
+        if not self.extract:
+            raise RuntimeError("browser search isn't set up")
+        template = store.get("search_url") or default_search_url(store["url"])
+        page = (self.render or default_render)(template.replace("{q}", quote_plus(query)))
+        self._browser_last[(store["id"], query)] = time.time()
+        text = html_to_text(page.html, page.url, images=True, limit=40000)
+        products = self.extract(text, store["name"], f"search results for: {query}")
+        host = urlparse(store["url"]).netloc.removeprefix("www.")
+        out = []
+        for p in products:
+            if not p.url.startswith("http") or not p.title:
+                continue
+            cond = f"On sale (was {p.was_price:.0f})" if p.was_price and p.was_price > p.price else "New"
+            out.append(Listing(
+                listing_id=f"{host}:{urlparse(p.url).path}",
+                title=p.title, price=p.price or None, currency=p.currency or store.get("currency", ""),
+                url=p.url, image_url=p.image_url if p.image_url.startswith("http") else "",
+                size_text=("Sold out" if p.sold_out else f"In stock: {p.sizes}" if p.sizes else ""),
+                condition=cond + (" · sold out" if p.sold_out else ""),
+            ))
+        self.report(store["id"], {"status": f"Searched with a browser · {len(out)} products on the last search"})
         return out
 
     def _search_shopify(self, client: httpx.Client, store: dict, query: str, limit: int) -> list[Listing]:

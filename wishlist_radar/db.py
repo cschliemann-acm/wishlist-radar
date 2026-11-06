@@ -103,6 +103,15 @@ CREATE TABLE IF NOT EXISTS health (
     failures INTEGER NOT NULL DEFAULT 0,           -- consecutive
     alerted INTEGER NOT NULL DEFAULT 0
 );
+CREATE TABLE IF NOT EXISTS alert_emails (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    sender TEXT DEFAULT '',
+    subject TEXT DEFAULT '',
+    products INTEGER DEFAULT 0,
+    matched INTEGER DEFAULT 0,
+    error TEXT DEFAULT '',
+    created_at REAL NOT NULL
+);
 CREATE TABLE IF NOT EXISTS sale_sources (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL,
@@ -137,7 +146,7 @@ CREATE TABLE IF NOT EXISTS stores (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL,
     url TEXT NOT NULL UNIQUE,                      -- homepage, e.g. https://www.nomanwalksalone.com
-    kind TEXT NOT NULL DEFAULT 'pending',          -- pending | shopify | feed | unsupported
+    kind TEXT NOT NULL DEFAULT 'pending',          -- pending | shopify | feed | browser | unsupported
     feed_url TEXT DEFAULT '',
     currency TEXT DEFAULT '',
     status TEXT DEFAULT '',                        -- last detection / search message
@@ -160,6 +169,7 @@ MIGRATIONS = [
     "ALTER TABLE listings ADD COLUMN fit TEXT DEFAULT ''",
     "ALTER TABLE listings ADD COLUMN fit_note TEXT DEFAULT ''",
     "ALTER TABLE items ADD COLUMN search_query_jp TEXT DEFAULT ''",
+    "ALTER TABLE stores ADD COLUMN search_url TEXT DEFAULT ''",
 ]
 
 DEFAULT_SETTINGS: dict[str, Any] = {
@@ -182,7 +192,8 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "timezone": "America/New_York",
     "last_digest_at": 0,
     "last_backup_at": 0,
-    "app_url": "",              # remembered from your visits, for links in notifications
+    "app_url": "",
+    "last_email_check_at": 0,              # remembered from your visits, for links in notifications
     "sale_brands": "",          # brands you follow for sample sales, one per line
     "sales_menswear_only": True,
 

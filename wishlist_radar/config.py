@@ -45,6 +45,11 @@ class Config:
     transcribe: str = field(default_factory=lambda: os.getenv("TRANSCRIBE", "off").strip().lower())
     transcribe_api_key: str = field(default_factory=lambda: os.getenv("TRANSCRIBE_API_KEY", "").strip())
 
+    # Mailbox for saved-search alert emails (see emailbox.py)
+    alerts_imap_host: str = field(default_factory=lambda: os.getenv("ALERTS_IMAP_HOST", "imap.gmail.com").strip())
+    alerts_imap_user: str = field(default_factory=lambda: os.getenv("ALERTS_IMAP_USER", "").strip())
+    alerts_imap_password: str = field(default_factory=lambda: os.getenv("ALERTS_IMAP_PASSWORD", "").replace(" ", ""))
+
     instagram_cookies_file: str = field(default_factory=lambda: os.getenv("INSTAGRAM_COOKIES_FILE", ""))
     data_dir: Path = field(default_factory=lambda: Path(os.getenv("DATA_DIR", "./data")))
     # Turn off the background checker (e.g. while developing)
